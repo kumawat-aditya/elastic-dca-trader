@@ -32,7 +32,7 @@ python3 --version
 
 ```bash
 cd ~
-git clone https://github.com/Adikumaw/elastic-dca-trader.git
+git clone https://github.com/kumawat-aditya/elastic-dca-trader.git
 
 # Enter the repository folder
 cd elastic-dca-trader

@@ -4,17 +4,17 @@
 //|                           Execution Bridge for Elastic DCA Engine|
 //+------------------------------------------------------------------+
 #property copyright "Elastic DCA System"
-#property link      "https://github.com/Adikumaw/elastic-dca-trader"
-#property version   "3.4.2"
+#property link "https://github.com/kumawat-aditya/elastic-dca-trader"
+#property version "3.4.2"
 #property strict
 
 //--- Input Parameters ---
-//input string InpServerURL   = "http://127.0.0.1:8000"; for dev
-input string InpServerURL = "http://YOUR_SERVER_IP:8000";  // Server URL
-input int    InpTimeout     = 5000;                    // Request timeout (ms)
-input int    InpMagicNumber = 789456;                  // Magic number for trades
-input int    InpSlippage    = 10;                      // Slippage in points
-input bool   InpDebugMode   = true;                    // Enable debug logging
+// input string InpServerURL   = "http://127.0.0.1:8000"; for dev
+input string InpServerURL = "http://YOUR_SERVER_IP:8000"; // Server URL
+input int InpTimeout = 5000;                              // Request timeout (ms)
+input int InpMagicNumber = 789456;                        // Magic number for trades
+input int InpSlippage = 10;                               // Slippage in points
+input bool InpDebugMode = true;                           // Enable debug logging
 
 //--- Global Variables ---
 string g_BrokerName = "";
@@ -35,10 +35,10 @@ int OnInit()
    g_AccountID = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
    g_Symbol = _Symbol;
    g_Digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   
+
    // Set timer for 1-second polling (Heartbeat)
    EventSetTimer(1);
-   
+
    Print("==================================================");
    Print("Elastic DCA Client v3.4.2 Initialized");
    Print("Status: Waiting for Server Command...");
@@ -51,8 +51,8 @@ int OnInit()
    Print("IMPORTANT: Ensure server URL is whitelisted in:");
    Print("Tools -> Options -> Expert Advisors -> Allow WebRequest");
    Print("==================================================");
-   
-   return(INIT_SUCCEEDED);
+
+   return (INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
@@ -61,20 +61,35 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   
+
    string reasonText = "";
-   switch(reason)
+   switch (reason)
    {
-      case REASON_PROGRAM: reasonText = "Program terminated"; break;
-      case REASON_REMOVE: reasonText = "EA removed from chart"; break;
-      case REASON_RECOMPILE: reasonText = "EA recompiled"; break;
-      case REASON_CHARTCHANGE: reasonText = "Chart changed"; break;
-      case REASON_CHARTCLOSE: reasonText = "Chart closed"; break;
-      case REASON_PARAMETERS: reasonText = "Parameters changed"; break;
-      case REASON_ACCOUNT: reasonText = "Account changed"; break;
-      default: reasonText = "Unknown reason";
+   case REASON_PROGRAM:
+      reasonText = "Program terminated";
+      break;
+   case REASON_REMOVE:
+      reasonText = "EA removed from chart";
+      break;
+   case REASON_RECOMPILE:
+      reasonText = "EA recompiled";
+      break;
+   case REASON_CHARTCHANGE:
+      reasonText = "Chart changed";
+      break;
+   case REASON_CHARTCLOSE:
+      reasonText = "Chart closed";
+      break;
+   case REASON_PARAMETERS:
+      reasonText = "Parameters changed";
+      break;
+   case REASON_ACCOUNT:
+      reasonText = "Account changed";
+      break;
+   default:
+      reasonText = "Unknown reason";
    }
-   
+
    Print("==================================================");
    Print("Elastic DCA Client Stopped: ", reasonText);
    Print("==================================================");
@@ -87,20 +102,20 @@ void OnTimer()
 {
    // Prevent excessive polling within the same second
    datetime currentTime = TimeCurrent();
-   if(currentTime == g_LastTickTime)
+   if (currentTime == g_LastTickTime)
       return;
-   
+
    g_LastTickTime = currentTime;
-   
+
    // Build and send tick data
    string jsonPayload = BuildTickPayload();
-   
-   if(jsonPayload == "")
+
+   if (jsonPayload == "")
    {
       Print("[ERROR] Failed to build payload");
       return;
    }
-   
+
    // Send to server
    SendTickToServer(jsonPayload);
 }
@@ -115,14 +130,14 @@ string BuildTickPayload()
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double ask = SymbolInfoDouble(g_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(g_Symbol, SYMBOL_BID);
-   
+
    // Validate prices
-   if(ask <= 0 || bid <= 0)
+   if (ask <= 0 || bid <= 0)
    {
       Print("[WARN] Invalid prices - Ask: ", ask, ", Bid: ", bid);
       return "";
    }
-   
+
    // Start JSON construction
    string json = "{";
    json += "\"account_id\":\"" + g_AccountID + "\",";
@@ -132,45 +147,46 @@ string BuildTickPayload()
    json += "\"ask\":" + DoubleToString(ask, g_Digits) + ",";
    json += "\"bid\":" + DoubleToString(bid, g_Digits) + ",";
    json += "\"positions\":[";
-   
+
    // Add all open positions
    int total = PositionsTotal();
    int added = 0;
-   
-   for(int i = 0; i < total; i++)
+
+   for (int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionSelectByTicket(ticket))
+      if (ticket > 0 && PositionSelectByTicket(ticket))
       {
          string symbol = PositionGetString(POSITION_SYMBOL);
-         
+
          // Include all positions (server will filter by comment hash)
-         if(added > 0) json += ",";
-         
+         if (added > 0)
+            json += ",";
+
          json += "{";
          json += "\"ticket\":" + IntegerToString(ticket) + ",";
          json += "\"symbol\":\"" + symbol + "\",";
-         
+
          ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          json += "\"type\":\"" + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL") + "\",";
-         
+
          json += "\"volume\":" + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ",";
          json += "\"price\":" + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), g_Digits) + ",";
          json += "\"profit\":" + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + ",";
          json += "\"comment\":\"" + PositionGetString(POSITION_COMMENT) + "\"";
          json += "}";
-         
+
          added++;
       }
    }
-   
+
    json += "]}";
-   
-   if(InpDebugMode && added > 0)
+
+   if (InpDebugMode && added > 0)
    {
       Print("[INFO] Sending ", added, " positions to server");
    }
-   
+
    return json;
 }
 
@@ -183,41 +199,41 @@ void SendTickToServer(string jsonPayload)
    char result[];
    string headers = "Content-Type: application/json\r\n";
    string resultHeaders;
-   
+
    // Proper conversion to UTF8 array
    int len = StringToCharArray(jsonPayload, data, 0, WHOLE_ARRAY, CP_UTF8);
-   
+
    // Remove null terminator
-   if(len > 0)
+   if (len > 0)
       ArrayResize(data, len - 1);
-   
+
    // Send POST request
    ResetLastError();
    string url = InpServerURL + "/api/tick";
    int statusCode = WebRequest("POST", url, headers, InpTimeout, data, result, resultHeaders);
-   
+
    // Handle response
-   if(statusCode == 200)
+   if (statusCode == 200)
    {
       g_ConsecutiveErrors = 0;
       g_ServerReachable = true;
-      
+
       string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
       ProcessServerResponse(response);
    }
-   else if(statusCode == 204)
+   else if (statusCode == 204)
    {
       // No content - heartbeat OK (Waiting state)
       g_ConsecutiveErrors = 0;
       g_ServerReachable = true;
    }
-   else if(statusCode == -1)
+   else if (statusCode == -1)
    {
       // Request failed
       int error = GetLastError();
       g_ConsecutiveErrors++;
-      
-      if(error == 4060)
+
+      if (error == 4060)
       {
          Print("[ERROR] WebRequest not allowed! Add server URL to allowed list:");
          Print("  Tools -> Options -> Expert Advisors -> Allow WebRequest for:");
@@ -227,7 +243,7 @@ void SendTickToServer(string jsonPayload)
       else
       {
          // Only log sporadic errors to avoid spamming journal
-         if(g_ConsecutiveErrors % 20 == 1) 
+         if (g_ConsecutiveErrors % 20 == 1)
          {
             Print("[CONN] Connection failed. Code: ", error, " (", g_ConsecutiveErrors, " retries)");
          }
@@ -237,7 +253,7 @@ void SendTickToServer(string jsonPayload)
    {
       // Server error (500, 404, etc)
       g_ConsecutiveErrors++;
-      if(g_ConsecutiveErrors % 10 == 1)
+      if (g_ConsecutiveErrors % 10 == 1)
       {
          Print("[SERVER ERROR] Status: ", statusCode);
       }
@@ -249,58 +265,58 @@ void SendTickToServer(string jsonPayload)
 //+------------------------------------------------------------------+
 void ProcessServerResponse(string response)
 {
-   if(response == "")
+   if (response == "")
       return;
-   
+
    // Parse action
    string action = ExtractJsonValue(response, "action");
-   
-   if(action == "" || action == "WAIT")
+
+   if (action == "" || action == "WAIT")
       return; // No action needed
-   
-   if(InpDebugMode)
+
+   if (InpDebugMode)
    {
       Print("[SERVER] Action: ", action);
    }
-   
+
    // Handle CLOSE_ALL (Snap-Back or Panic)
-   if(action == "CLOSE_ALL")
+   if (action == "CLOSE_ALL")
    {
       string comment = ExtractJsonValue(response, "comment");
-      
-      if(comment == "")
+
+      if (comment == "")
       {
          Print("[WARN] CLOSE_ALL received but no comment specified");
          return;
       }
-      
+
       // Check for special keywords
-      if(comment == "server" || comment == "EMERGENCY" || comment == "CLOSE_ALL_EMERGENCY")
+      if (comment == "server" || comment == "EMERGENCY" || comment == "CLOSE_ALL_EMERGENCY")
       {
          Print("[ACTION] EMERGENCY CLOSE ALL POSITIONS");
          CloseAllPositions();
          return;
       }
-      
+
       // Otherwise, it's a hash ID (buy_XXXXXXXX or sell_XXXXXXXX)
       // Close only positions matching this hash
       Print("[ACTION] Closing positions with ID: ", comment);
       ClosePositionsByComment(comment);
-      
+
       return;
    }
-   
+
    // Handle BUY (Elastic Expansion)
-   if(action == "BUY")
+   if (action == "BUY")
    {
       string sVolume = ExtractJsonValue(response, "volume");
       double volume = StringToDouble(sVolume);
       string comment = ExtractJsonValue(response, "comment");
       bool alert = ExtractJsonBool(response, "alert");
-      
-      if(volume > 0 && comment != "")
+
+      if (volume > 0 && comment != "")
       {
-         if(alert)
+         if (alert)
          {
             Alert("🟢 BUY SIGNAL: ", g_Symbol, " | Volume: ", volume, " | ", comment);
          }
@@ -310,21 +326,21 @@ void ProcessServerResponse(string response)
       {
          Print("[WARN] Invalid BUY signal - Volume: ", volume, ", Comment: ", comment);
       }
-      
+
       return;
    }
-   
+
    // Handle SELL (Elastic Expansion)
-   if(action == "SELL")
+   if (action == "SELL")
    {
       string sVolume = ExtractJsonValue(response, "volume");
       double volume = StringToDouble(sVolume);
       string comment = ExtractJsonValue(response, "comment");
       bool alert = ExtractJsonBool(response, "alert");
-      
-      if(volume > 0 && comment != "")
+
+      if (volume > 0 && comment != "")
       {
-         if(alert)
+         if (alert)
          {
             Alert("🔴 SELL SIGNAL: ", g_Symbol, " | Volume: ", volume, " | ", comment);
          }
@@ -334,10 +350,10 @@ void ProcessServerResponse(string response)
       {
          Print("[WARN] Invalid SELL signal - Volume: ", volume, ", Comment: ", comment);
       }
-      
+
       return;
    }
-   
+
    Print("[WARN] Unknown action: ", action);
 }
 
@@ -348,43 +364,43 @@ string ExtractJsonValue(string json, string key)
 {
    string search = "\"" + key + "\"";
    int pos = StringFind(json, search);
-   
-   if(pos == -1)
+
+   if (pos == -1)
       return "";
-   
+
    // Find the colon after key
    pos = StringFind(json, ":", pos);
-   if(pos == -1)
+   if (pos == -1)
       return "";
-   
+
    pos++; // Move past colon
-   
+
    // Skip whitespace
-   while(pos < StringLen(json))
+   while (pos < StringLen(json))
    {
       ushort c = StringGetCharacter(json, pos);
-      if(c != ' ' && c != '\t' && c != '\n' && c != '\r')
+      if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
          break;
       pos++;
    }
-   
+
    // Check if value is string (starts with quote)
    bool isString = false;
-   if(StringGetCharacter(json, pos) == '"')
+   if (StringGetCharacter(json, pos) == '"')
    {
       isString = true;
       pos++; // Skip opening quote
    }
-   
+
    // Find end of value
    int endPos = pos;
-   
-   if(isString)
+
+   if (isString)
    {
       // Find closing quote
-      while(endPos < StringLen(json))
+      while (endPos < StringLen(json))
       {
-         if(StringGetCharacter(json, endPos) == '"')
+         if (StringGetCharacter(json, endPos) == '"')
             break;
          endPos++;
       }
@@ -392,15 +408,15 @@ string ExtractJsonValue(string json, string key)
    else
    {
       // Find comma, closing brace, or end
-      while(endPos < StringLen(json))
+      while (endPos < StringLen(json))
       {
          ushort c = StringGetCharacter(json, endPos);
-         if(c == ',' || c == '}' || c == ']' || c == ' ')
+         if (c == ',' || c == '}' || c == ']' || c == ' ')
             break;
          endPos++;
       }
    }
-   
+
    return StringSubstr(json, pos, endPos - pos);
 }
 
@@ -419,28 +435,28 @@ bool ExtractJsonBool(string json, string key)
 void ExecuteBuyOrder(double lots, string comment)
 {
    double ask = SymbolInfoDouble(g_Symbol, SYMBOL_ASK);
-   
-   if(ask <= 0)
+
+   if (ask <= 0)
    {
       Print("[ERROR] Invalid ASK price: ", ask);
       return;
    }
-   
+
    // Normalize volume
    double minLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_STEP);
-   
+
    lots = MathMax(lots, minLot);
    lots = MathMin(lots, maxLot);
    lots = NormalizeDouble(lots / lotStep, 0) * lotStep;
-   
+
    // Prepare request
    MqlTradeRequest request;
    MqlTradeResult result;
    ZeroMemory(request);
    ZeroMemory(result);
-   
+
    request.action = TRADE_ACTION_DEAL;
    request.symbol = g_Symbol;
    request.volume = lots;
@@ -452,15 +468,15 @@ void ExecuteBuyOrder(double lots, string comment)
    request.magic = InpMagicNumber;
    request.comment = comment;
    request.type_filling = GetOrderFillingType();
-   
+
    // Send order
    ResetLastError();
    bool sent = OrderSend(request, result);
-   
-   if(sent && result.retcode == TRADE_RETCODE_DONE)
+
+   if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
-      Print("[BUY] Order executed - Ticket: ", result.order, 
-            ", Volume: ", lots, 
+      Print("[BUY] Order executed - Ticket: ", result.order,
+            ", Volume: ", lots,
             ", Price: ", result.price,
             ", Comment: ", comment);
    }
@@ -478,28 +494,28 @@ void ExecuteBuyOrder(double lots, string comment)
 void ExecuteSellOrder(double lots, string comment)
 {
    double bid = SymbolInfoDouble(g_Symbol, SYMBOL_BID);
-   
-   if(bid <= 0)
+
+   if (bid <= 0)
    {
       Print("[ERROR] Invalid BID price: ", bid);
       return;
    }
-   
+
    // Normalize volume
    double minLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_STEP);
-   
+
    lots = MathMax(lots, minLot);
    lots = MathMin(lots, maxLot);
    lots = NormalizeDouble(lots / lotStep, 0) * lotStep;
-   
+
    // Prepare request
    MqlTradeRequest request;
    MqlTradeResult result;
    ZeroMemory(request);
    ZeroMemory(result);
-   
+
    request.action = TRADE_ACTION_DEAL;
    request.symbol = g_Symbol;
    request.volume = lots;
@@ -511,12 +527,12 @@ void ExecuteSellOrder(double lots, string comment)
    request.magic = InpMagicNumber;
    request.comment = comment;
    request.type_filling = GetOrderFillingType();
-   
+
    // Send order
    ResetLastError();
    bool sent = OrderSend(request, result);
-   
-   if(sent && result.retcode == TRADE_RETCODE_DONE)
+
+   if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
       Print("[SELL] Order executed - Ticket: ", result.order,
             ", Volume: ", lots,
@@ -538,16 +554,17 @@ void CloseAllPositions()
 {
    int total = PositionsTotal();
    int closed = 0;
-   
-   for(int i = total - 1; i >= 0; i--)
+
+   for (int i = total - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionSelectByTicket(ticket))
+      if (ticket > 0 && PositionSelectByTicket(ticket))
       {
-         if(ClosePosition(ticket)) closed++;
+         if (ClosePosition(ticket))
+            closed++;
       }
    }
-   
+
    Print("[CLOSE] Closed ", closed, " of ", total, " positions");
 }
 
@@ -559,25 +576,26 @@ void ClosePositionsByComment(string commentFilter)
    int total = PositionsTotal();
    int closed = 0;
    int matched = 0;
-   
-   for(int i = total - 1; i >= 0; i--)
+
+   for (int i = total - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      
-      if(ticket > 0 && PositionSelectByTicket(ticket))
+
+      if (ticket > 0 && PositionSelectByTicket(ticket))
       {
          string comment = PositionGetString(POSITION_COMMENT);
-         
+
          // Check if comment contains filter string (the hash ID)
-         if(StringFind(comment, commentFilter) != -1)
+         if (StringFind(comment, commentFilter) != -1)
          {
             matched++;
-            if(ClosePosition(ticket)) closed++;
+            if (ClosePosition(ticket))
+               closed++;
          }
       }
    }
-   
-   if(InpDebugMode)
+
+   if (InpDebugMode)
    {
       Print("[CLOSE] Found ", matched, " positions matching '", commentFilter, "', closed ", closed);
    }
@@ -588,25 +606,25 @@ void ClosePositionsByComment(string commentFilter)
 //+------------------------------------------------------------------+
 bool ClosePosition(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket))
+   if (!PositionSelectByTicket(ticket))
    {
       Print("[ERROR] Position not found: ", ticket);
       return false;
    }
-   
+
    string symbol = PositionGetString(POSITION_SYMBOL);
    double volume = PositionGetDouble(POSITION_VOLUME);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   
+
    // Determine opposite order type
    ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   
+
    // Prepare close request
    MqlTradeRequest request;
    MqlTradeResult result;
    ZeroMemory(request);
    ZeroMemory(result);
-   
+
    request.action = TRADE_ACTION_DEAL;
    request.symbol = symbol;
    request.volume = volume;
@@ -615,14 +633,14 @@ bool ClosePosition(ulong ticket)
    request.deviation = InpSlippage;
    request.magic = InpMagicNumber;
    request.type_filling = GetOrderFillingType();
-   
+
    // Send close request
    ResetLastError();
    bool sent = OrderSend(request, result);
-   
-   if(sent && result.retcode == TRADE_RETCODE_DONE)
+
+   if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
-      if(InpDebugMode)
+      if (InpDebugMode)
       {
          Print("[CLOSE] Position closed - Ticket: ", ticket, ", Profit: ", PositionGetDouble(POSITION_PROFIT));
       }
@@ -641,21 +659,23 @@ bool ClosePosition(ulong ticket)
 ENUM_ORDER_TYPE_FILLING GetOrderFillingType()
 {
    // Specific logic for Prop Firms / ECN Brokers
-   if(StringFind(g_BrokerName, "XM") != -1 ||
-      StringFind(g_BrokerName, "Raw Trading") != -1 ||
-      StringFind(g_BrokerName, "Royal ETP") != -1 ||
-      StringFind(g_BrokerName, "International Capital Markets") != -1 ||
-      StringFind(g_BrokerName, "Atlas Funded") != -1)
+   if (StringFind(g_BrokerName, "XM") != -1 ||
+       StringFind(g_BrokerName, "Raw Trading") != -1 ||
+       StringFind(g_BrokerName, "Royal ETP") != -1 ||
+       StringFind(g_BrokerName, "International Capital Markets") != -1 ||
+       StringFind(g_BrokerName, "Atlas Funded") != -1)
    {
       return ORDER_FILLING_IOC;
    }
-   
+
    // Fallback to Symbol settings
    int fillingMode = (int)SymbolInfoInteger(g_Symbol, SYMBOL_FILLING_MODE);
-   
-   if((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK;
-   if((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
-   
+
+   if ((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   if ((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+
    return ORDER_FILLING_RETURN;
 }
 //+------------------------------------------------------------------+

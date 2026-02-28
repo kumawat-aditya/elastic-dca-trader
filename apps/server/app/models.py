@@ -8,6 +8,11 @@ Blueprint references:
   - Section 9.6  : MarketState model
   - Section 11.1 : MasterTick request model
   - Section 11.4 : Admin API request/response models
+  - Section 9.1  : User model (Phase 2)
+  - Section 9.2  : Subscription model (Phase 2)
+  - Section 9.5  : UserSnapshot model (Phase 2)
+  - Section 11.3 : Auth request/response models (Phase 2)
+  - Section 11.5 : Client request/response models (Phase 2)
 """
 
 from __future__ import annotations
@@ -140,3 +145,99 @@ class UpdateGridConfigRequest(BaseModel):
 class GridControlRequest(BaseModel):
     on: Optional[bool] = None
     cyclic: Optional[bool] = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 MODELS — Authentication & User Management
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── User (Section 9.1) ──────────────────────────────────────────────────────
+
+class User(BaseModel):
+    """Database user record."""
+    id: int = 0
+    email: str
+    name: str
+    phone: Optional[str] = None
+    mt5_id: Optional[str] = None
+    assigned_tier_id: Optional[int] = None
+    role: str = "client"                        # 'client' or 'admin'
+    status: str = "pending"                     # 'pending', 'active', 'banned'
+    email_verified: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# ── Subscription (Section 9.2) ──────────────────────────────────────────────
+
+class Subscription(BaseModel):
+    """Subscription record."""
+    id: int = 0
+    user_id: int
+    plan_name: str                              # "monthly", "quarterly", etc.
+    status: str = "active"                      # 'active', 'cancelled', 'expired'
+    paypal_sub_id: Optional[str] = None
+    start_date: str                             # ISO timestamp
+    end_date: str                               # ISO timestamp
+    created_at: Optional[str] = None
+
+
+# ── UserSnapshot (Section 9.5) ──────────────────────────────────────────────
+
+class UserSnapshot(BaseModel):
+    """Client EA snapshot data (Phase 3 prep)."""
+    user_id: int
+    equity: Optional[float] = None
+    balance: Optional[float] = None
+    positions: list = Field(default_factory=list)  # JSONB array
+    last_seen: Optional[str] = None
+
+
+# ── Auth Request Models (Section 11.3) ──────────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    email: str
+    name: str
+    phone: Optional[str] = None
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+# ── Client Request Models (Section 11.5) ────────────────────────────────────
+
+class UpdateAccountRequest(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    mt5_id: Optional[str] = None
+
+
+class UpdateMetaIdRequest(BaseModel):
+    mt5_id: str
+
+
+# ── Admin User Management Models (Section 11.4) ─────────────────────────────
+
+class UpdateUserStatusRequest(BaseModel):
+    status: str                                 # 'active', 'banned', 'pending'
+
+
+class ManageSubscriptionRequest(BaseModel):
+    plan_name: str                              # "monthly", "quarterly", etc.
+    end_date: str                               # ISO timestamp (YYYY-MM-DDTHH:MM:SS)

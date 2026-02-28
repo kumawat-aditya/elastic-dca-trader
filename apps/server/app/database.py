@@ -3,13 +3,17 @@ PostgreSQL database layer using asyncpg.
 
 Handles:
   - Connection pool management
-  - Schema initialization (DDL from Blueprint Section 9.3, 9.4, 9.6)
-  - CRUD for tiers, tier_grids, market_state
+  - Schema initialization (DDL from Blueprint Section 9.1–9.6)
+  - CRUD for tiers, tier_grids, market_state (Phase 1)
+  - CRUD for users, subscriptions, user_snapshots (Phase 2)
   - State persistence (save/load in-memory tier state)
 
 Blueprint references:
+  - Section 9.1 : users table
+  - Section 9.2 : subscriptions table
   - Section 9.3 : tiers table
   - Section 9.4 : tier_grids table (config JSONB + runtime JSONB)
+  - Section 9.5 : user_snapshots table
   - Section 9.6 : market_state table
 """
 
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Optional
 
 import asyncpg
@@ -28,8 +33,11 @@ from app.models import (
     GridRow,
     GridRuntime,
     MarketState,
+    Subscription,
     Tier,
     TierState,
+    User,
+    UserSnapshot,
 )
 
 logger = logging.getLogger("elastic_dca.db")
@@ -118,6 +126,57 @@ async def _create_schema(conn: asyncpg.Connection) -> None:
     # Ensure the singleton market_state row exists
     await conn.execute("""
         INSERT INTO market_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+    """)
+
+    # ── Phase 2 Tables ───────────────────────────────────────────────────────
+
+    # Section 9.1 — users
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id              SERIAL PRIMARY KEY,
+            email           VARCHAR(255) UNIQUE NOT NULL,
+            password_hash   VARCHAR(255) NOT NULL,
+            name            VARCHAR(100) NOT NULL,
+            phone           VARCHAR(20),
+            mt5_id          VARCHAR(50) UNIQUE,
+            assigned_tier_id INTEGER REFERENCES tiers(id),
+            role            VARCHAR(20) DEFAULT 'client',
+            status          VARCHAR(20) DEFAULT 'pending',
+            email_verified  BOOLEAN DEFAULT FALSE,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_mt5_id ON users(mt5_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);")
+
+    # Section 9.2 — subscriptions
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id              SERIAL PRIMARY KEY,
+            user_id         INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            plan_name       VARCHAR(50) NOT NULL,
+            status          VARCHAR(20) DEFAULT 'active',
+            paypal_sub_id   VARCHAR(100),
+            start_date      TIMESTAMP NOT NULL,
+            end_date        TIMESTAMP NOT NULL,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_end_date ON subscriptions(end_date);")
+
+    # Section 9.5 — user_snapshots (Phase 3 prep)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_snapshots (
+            user_id         INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            equity          DECIMAL(15,2),
+            balance         DECIMAL(15,2),
+            positions       JSONB DEFAULT '[]',
+            last_seen       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
     logger.info("Schema verified / created.")
@@ -334,4 +393,242 @@ def _row_to_tier(row: asyncpg.Record) -> Tier:
         is_active=row["is_active"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — User CRUD (Section 9.1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def create_user(email: str, password_hash: str, name: str, phone: str | None = None) -> User:
+    """Insert a new user with status='pending', email_verified=False."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Check for duplicate email
+        existing = await conn.fetchrow("SELECT id FROM users WHERE email = $1", email)
+        if existing:
+            raise ValueError("Email already registered")
+
+        row = await conn.fetchrow("""
+            INSERT INTO users (email, password_hash, name, phone)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                      role, status, email_verified, created_at::text, updated_at::text
+        """, email, password_hash, name, phone)
+        return _row_to_user(row)
+
+
+async def get_user_by_email(email: str) -> User | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                   role, status, email_verified, created_at::text, updated_at::text
+            FROM users WHERE email = $1
+        """, email)
+        return _row_to_user(row) if row else None
+
+
+async def get_user_by_id(user_id: int) -> User | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                   role, status, email_verified, created_at::text, updated_at::text
+            FROM users WHERE id = $1
+        """, user_id)
+        return _row_to_user(row) if row else None
+
+
+async def get_all_users() -> list[User]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                   role, status, email_verified, created_at::text, updated_at::text
+            FROM users ORDER BY id
+        """)
+        return [_row_to_user(r) for r in rows]
+
+
+async def update_user(user_id: int, **kwargs) -> User | None:
+    """Update user fields. Only provided (non-None) fields are changed."""
+    pool = await get_pool()
+    allowed = {"email", "name", "phone", "mt5_id", "status", "password_hash",
+               "email_verified", "assigned_tier_id"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not updates:
+        return await get_user_by_id(user_id)
+
+    # MT5 ID uniqueness check
+    if "mt5_id" in updates and updates["mt5_id"]:
+        async with pool.acquire() as conn:
+            conflict = await conn.fetchrow(
+                "SELECT id FROM users WHERE mt5_id = $1 AND id != $2",
+                updates["mt5_id"], user_id,
+            )
+            if conflict:
+                raise ValueError("MT5 ID already claimed by another user")
+
+    set_clauses = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates))
+    set_clauses += ", updated_at = CURRENT_TIMESTAMP"
+    values = [user_id] + list(updates.values())
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(f"""
+            UPDATE users SET {set_clauses}
+            WHERE id = $1
+            RETURNING id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                      role, status, email_verified, created_at::text, updated_at::text
+        """, *values)
+        return _row_to_user(row) if row else None
+
+
+async def verify_user_email(user_id: int) -> User | None:
+    """Mark user email as verified and set status to 'active'."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE users SET email_verified = TRUE, status = 'active',
+                             updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            RETURNING id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                      role, status, email_verified, created_at::text, updated_at::text
+        """, user_id)
+        return _row_to_user(row) if row else None
+
+
+def _row_to_user(row: asyncpg.Record) -> User:
+    return User(
+        id=row["id"],
+        email=row["email"],
+        name=row["name"],
+        phone=row["phone"],
+        mt5_id=row["mt5_id"],
+        assigned_tier_id=row["assigned_tier_id"],
+        role=row["role"],
+        status=row["status"],
+        email_verified=row["email_verified"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — Subscription CRUD (Section 9.2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_dt(val: str) -> datetime:
+    """Parse an ISO 8601 date/datetime string into a naive datetime for asyncpg."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(val, fmt)
+        except ValueError:
+            continue
+    # fromisoformat handles timezone offsets; strip tzinfo for naive datetime
+    dt = datetime.fromisoformat(val)
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+async def create_subscription(user_id: int, plan_name: str,
+                               start_date: str, end_date: str) -> Subscription:
+    """Admin manually creates a subscription (Phase 2: no PayPal yet)."""
+    pool = await get_pool()
+    sd = _parse_dt(start_date)
+    ed = _parse_dt(end_date)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO subscriptions (user_id, plan_name, start_date, end_date)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, user_id, plan_name, status, paypal_sub_id,
+                      start_date::text, end_date::text, created_at::text
+        """, user_id, plan_name, sd, ed)
+        return _row_to_subscription(row)
+
+
+async def get_subscription_by_user(user_id: int) -> Subscription | None:
+    """Get the latest active subscription for a user."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, user_id, plan_name, status, paypal_sub_id,
+                   start_date::text, end_date::text, created_at::text
+            FROM subscriptions
+            WHERE user_id = $1
+            ORDER BY end_date DESC
+            LIMIT 1
+        """, user_id)
+        return _row_to_subscription(row) if row else None
+
+
+async def update_subscription(sub_id: int, **kwargs) -> Subscription | None:
+    """Update subscription fields."""
+    pool = await get_pool()
+    allowed = {"plan_name", "status", "end_date", "start_date", "paypal_sub_id"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not updates:
+        return None
+
+    # Convert date strings to datetime objects for asyncpg
+    for dk in ("end_date", "start_date"):
+        if dk in updates and isinstance(updates[dk], str):
+            updates[dk] = _parse_dt(updates[dk])
+
+    set_parts = []
+    values = [sub_id]
+    for i, (k, v) in enumerate(updates.items()):
+        set_parts.append(f"{k} = ${i+2}")
+        values.append(v)
+
+    set_clause = ", ".join(set_parts)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(f"""
+            UPDATE subscriptions SET {set_clause}
+            WHERE id = $1
+            RETURNING id, user_id, plan_name, status, paypal_sub_id,
+                      start_date::text, end_date::text, created_at::text
+        """, *values)
+        return _row_to_subscription(row) if row else None
+
+
+async def upsert_subscription(user_id: int, plan_name: str,
+                               start_date: str, end_date: str) -> Subscription:
+    """Create or update subscription for a user (admin manages manually)."""
+    existing = await get_subscription_by_user(user_id)
+    if existing:
+        updated = await update_subscription(
+            existing.id, plan_name=plan_name,
+            start_date=start_date, end_date=end_date, status="active",
+        )
+        return updated or existing
+    return await create_subscription(user_id, plan_name, start_date, end_date)
+
+
+async def is_subscription_active(user_id: int) -> bool:
+    """
+    Section 10.4: Check if user has an active subscription.
+    Active = status=='active' AND end_date > now().
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id FROM subscriptions
+            WHERE user_id = $1 AND status = 'active' AND end_date > CURRENT_TIMESTAMP
+            LIMIT 1
+        """, user_id)
+        return row is not None
+
+
+def _row_to_subscription(row: asyncpg.Record) -> Subscription:
+    return Subscription(
+        id=row["id"],
+        user_id=row["user_id"],
+        plan_name=row["plan_name"],
+        status=row["status"],
+        paypal_sub_id=row["paypal_sub_id"],
+        start_date=row["start_date"],
+        end_date=row["end_date"],
+        created_at=row["created_at"],
     )

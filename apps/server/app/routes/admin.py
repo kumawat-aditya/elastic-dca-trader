@@ -1,13 +1,17 @@
 """
-Admin API endpoints for tier and grid management.
+Admin API endpoints for tier, grid, and user management.
 
 Blueprint references:
-  - Section 11.4 : All admin endpoints
+  - Section 11.4 : All admin endpoints (JWT with role='admin')
   - Section 6.3  : Session activation (turning ON)
   - Section 6.4  : Session close (turning OFF)
   - Section 14.7 : Admin edits while session is active
   - Section 14.11: Overlapping tier ranges → 400 error
   - Section 14.12: Zero rows configured
+
+Phase 2: Transitioned from X-Admin-Key to JWT auth.
+         Added: GET /api/admin/users, PUT /api/admin/users/{user_id},
+                PUT /api/admin/users/{user_id}/subscription
 """
 
 from __future__ import annotations
@@ -16,8 +20,21 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.database import create_tier, delete_tier, get_all_tiers, get_tier, save_grid_state, update_tier
-from app.dependencies import verify_admin_key
+from app.database import (
+    create_tier,
+    delete_tier,
+    get_all_tiers,
+    get_all_users,
+    get_subscription_by_user,
+    get_tier,
+    get_user_by_id,
+    is_subscription_active,
+    save_grid_state,
+    update_tier,
+    update_user,
+    upsert_subscription,
+)
+from app.dependencies import verify_jwt_admin
 from app.engine import activate_grid, close_session
 from app.models import (
     GRID_IDS,
@@ -26,9 +43,11 @@ from app.models import (
     GridControlRequest,
     GridRow,
     GridRuntime,
+    ManageSubscriptionRequest,
     TierState,
     UpdateGridConfigRequest,
     UpdateTierRequest,
+    UpdateUserStatusRequest,
 )
 from app.state import (
     add_tier_state,
@@ -42,7 +61,8 @@ from app.state import (
 
 logger = logging.getLogger("elastic_dca.api.admin")
 
-router = APIRouter(prefix="/api/admin", dependencies=[Depends(verify_admin_key)])
+# Phase 2: Admin endpoints now require JWT with role='admin' (Section 10.1)
+router = APIRouter(prefix="/api/admin", dependencies=[Depends(verify_jwt_admin)])
 
 
 # ── Tier CRUD ────────────────────────────────────────────────────────────────
@@ -332,4 +352,103 @@ async def get_market():
         "contract_size": market.contract_size,
         "direction": market.direction,
         "last_update": market.last_update,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — User Management (Section 11.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/users")
+async def list_users():
+    """
+    GET /api/admin/users — List all users with subscription status.
+    Section 11.4: Admin can manage users via API.
+    """
+    users = await get_all_users()
+    result = []
+    for u in users:
+        sub = await get_subscription_by_user(u.id)
+        sub_active = await is_subscription_active(u.id)
+        result.append({
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "phone": u.phone,
+            "mt5_id": u.mt5_id,
+            "assigned_tier_id": u.assigned_tier_id,
+            "role": u.role,
+            "status": u.status,
+            "email_verified": u.email_verified,
+            "subscription": {
+                "plan_name": sub.plan_name if sub else None,
+                "status": sub.status if sub else None,
+                "end_date": sub.end_date if sub else None,
+                "is_active": sub_active,
+            },
+            "created_at": u.created_at,
+        })
+    return {"users": result}
+
+
+@router.put("/users/{user_id}")
+async def update_user_status(user_id: int, body: UpdateUserStatusRequest):
+    """
+    PUT /api/admin/users/{user_id} — Update user status (activate, ban, etc.).
+    Section 11.4: Admin manages user lifecycle.
+    """
+    if body.status not in ("active", "banned", "pending"):
+        raise HTTPException(status_code=400, detail="Status must be 'active', 'banned', or 'pending'")
+
+    user = await get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updated = await update_user(user_id, status=body.status)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    logger.info("Admin updated user id=%d status to '%s'", user_id, body.status)
+    return {
+        "user": {
+            "id": updated.id,
+            "email": updated.email,
+            "name": updated.name,
+            "status": updated.status,
+            "email_verified": updated.email_verified,
+        }
+    }
+
+
+@router.put("/users/{user_id}/subscription")
+async def manage_subscription(user_id: int, body: ManageSubscriptionRequest):
+    """
+    PUT /api/admin/users/{user_id}/subscription — Manually manage subscription.
+    Phase 2: No PayPal yet. Admin manually creates/extends subscriptions.
+    Section 11.4 + Phase 2 deliverables.
+    """
+    user = await get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from datetime import datetime, timezone
+    now_str = datetime.utcnow().isoformat()
+
+    sub = await upsert_subscription(
+        user_id=user_id,
+        plan_name=body.plan_name,
+        start_date=now_str,
+        end_date=body.end_date,
+    )
+
+    logger.info("Admin set subscription for user id=%d: plan=%s, end=%s", user_id, body.plan_name, body.end_date)
+    return {
+        "subscription": {
+            "id": sub.id,
+            "user_id": sub.user_id,
+            "plan_name": sub.plan_name,
+            "status": sub.status,
+            "start_date": sub.start_date,
+            "end_date": sub.end_date,
+        }
     }

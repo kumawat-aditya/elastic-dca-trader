@@ -1,15 +1,16 @@
 """
-Elastic DCA Cloud — Phase 1 FastAPI Application.
+Elastic DCA Cloud — Phase 2 FastAPI Application.
 
 This is the main entry point. Sets up:
   - Lifespan: DB init + state loading on startup, DB close on shutdown
-  - Routes: master-tick + admin endpoints
+  - Routes: master-tick + admin + auth + client endpoints
   - Logging
 
 Blueprint reference:
   - Phase 1: "Server: FastAPI app with POST /api/master-tick, in-memory tier state
     loaded from PostgreSQL on startup, virtual grid execution engine, state
     persistence to DB on every change, GET /api/admin/tiers/{id}/grids for testing."
+  - Phase 2: "Login system for admin and clients. JWT auth, user management."
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from fastapi import FastAPI
 
 from app.database import close_db, init_db
 from app.routes.admin import router as admin_router
+from app.routes.auth import router as auth_router
+from app.routes.client import router as client_router
 from app.routes.master import router as master_router
 from app.state import load_state_from_db
 
@@ -39,13 +42,13 @@ logger = logging.getLogger("elastic_dca")
 async def lifespan(app: FastAPI):
     """Startup: connect DB + load state. Shutdown: close DB."""
     logger.info("═" * 60)
-    logger.info("  Elastic DCA Cloud — Phase 1 Server Starting")
+    logger.info("  Elastic DCA Cloud — Phase 2 Server Starting")
     logger.info("═" * 60)
 
     await init_db()
     await load_state_from_db()
 
-    logger.info("Server ready. Waiting for Master EA ticks …")
+    logger.info("Server ready. Auth + User management enabled.")
     logger.info("═" * 60)
     yield
 
@@ -57,15 +60,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Elastic DCA Cloud",
-    version="4.0.0-phase1",
-    description="Phase 1: Core Backend + Master EA integration",
+    version="4.0.0-phase2",
+    description="Phase 2: Authentication + User Management",
     lifespan=lifespan,
 )
 
-app.include_router(master_router)
-app.include_router(admin_router)
+app.include_router(master_router)      # POST /api/master-tick (X-Admin-Key auth)
+app.include_router(auth_router)        # POST /api/auth/* (no auth required)
+app.include_router(admin_router)       # /api/admin/* (JWT role='admin')
+app.include_router(client_router)      # /api/client/* (JWT role='client')
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "4.0.0-phase1"}
+    return {"status": "ok", "version": "4.0.0-phase2"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    from app.config import settings
+    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=False)

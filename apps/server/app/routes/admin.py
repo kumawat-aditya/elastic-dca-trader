@@ -25,9 +25,11 @@ from app.database import (
     delete_tier,
     get_all_tiers,
     get_all_users,
+    get_clients_by_tier,
     get_subscription_by_user,
     get_tier,
     get_user_by_id,
+    get_user_snapshot,
     is_subscription_active,
     save_grid_state,
     update_tier,
@@ -35,7 +37,7 @@ from app.database import (
     upsert_subscription,
 )
 from app.dependencies import verify_jwt_admin
-from app.engine import activate_grid, close_session
+from app.engine import activate_grid, calculate_virtual_pnl, close_session
 from app.models import (
     GRID_IDS,
     CreateTierRequest,
@@ -58,6 +60,7 @@ from app.state import (
     remove_tier_state,
     tier_states,
 )
+from app.sync import parse_comment
 
 logger = logging.getLogger("elastic_dca.api.admin")
 
@@ -451,4 +454,120 @@ async def manage_subscription(user_id: int, body: ManageSubscriptionRequest):
             "start_date": sub.start_date,
             "end_date": sub.end_date,
         }
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3 — Admin Tier Client Endpoints (Section 11.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/tiers/{tier_id}/clients")
+async def list_tier_clients(tier_id: int):
+    """
+    GET /api/admin/tiers/{tier_id}/clients
+    List all clients currently assigned to this tier.
+    Section 11.4: connected = last_seen within 10 seconds.
+    """
+    ts = get_tier_state(tier_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Tier not found")
+
+    clients = await get_clients_by_tier(tier_id)
+    return {"clients": clients}
+
+
+@router.get("/tiers/{tier_id}/clients/{user_id}/positions")
+async def get_client_positions(tier_id: int, user_id: int):
+    """
+    GET /api/admin/tiers/{tier_id}/clients/{user_id}/positions
+    Get a specific client's current positions mapped to grid rows.
+
+    Section 11.4: Row matching — for each executed master row, find client
+    position where comment == f"{session_id}_{row.index}".
+    If not found: display null values (no error).
+    """
+    ts = get_tier_state(tier_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Tier not found")
+
+    user = await get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    snapshot = await get_user_snapshot(user_id)
+    client_positions = snapshot.positions if snapshot else []
+    client_balance = float(snapshot.balance) if snapshot and snapshot.balance else None
+
+    # Build comment → position lookup
+    pos_by_comment: dict[str, dict] = {}
+    for p in client_positions:
+        comment = p.get("comment", "") if isinstance(p, dict) else ""
+        if comment:
+            pos_by_comment[comment] = p
+
+    grids_data = {}
+    combined_profit = 0.0
+
+    for grid_id in GRID_IDS:
+        config = ts.configs.get(grid_id)
+        runtime = ts.runtimes.get(grid_id)
+        if not config or not runtime:
+            continue
+
+        current_session = runtime.session_id
+        rows_data = []
+        total_client_profit = 0.0
+        total_virtual_profit = 0.0
+
+        for row in config.rows:
+            if not row.executed:
+                continue
+
+            row_entry: dict = {
+                "index": row.index,
+                "master_entry_price": row.entry_price,
+                "master_executed": True,
+                "client_ticket": None,
+                "client_entry_price": None,
+                "client_lots": None,
+                "client_profit": None,
+            }
+
+            if current_session:
+                expected_comment = f"{current_session}_{row.index}"
+                client_pos = pos_by_comment.get(expected_comment)
+                if client_pos:
+                    profit = client_pos.get("profit", 0.0) or 0.0
+                    row_entry["client_ticket"] = client_pos.get("ticket")
+                    row_entry["client_entry_price"] = client_pos.get("price")
+                    row_entry["client_lots"] = client_pos.get("volume")
+                    row_entry["client_profit"] = profit
+                    total_client_profit += profit
+
+            rows_data.append(row_entry)
+
+        # Calculate virtual P&L from engine (using market data)
+        virtual_pnl = calculate_virtual_pnl(config, market.bid, market.ask, market.contract_size)
+        total_virtual_profit = round(virtual_pnl, 2)
+        total_client_profit = round(total_client_profit, 2)
+
+        grids_data[grid_id] = {
+            "session_id": current_session,
+            "rows": rows_data,
+            "total_client_profit": total_client_profit,
+            "total_virtual_profit": total_virtual_profit,
+        }
+
+        combined_profit += total_client_profit
+
+    combined_profit = round(combined_profit, 2)
+
+    return {
+        "user": {
+            "name": user.name,
+            "mt5_id": user.mt5_id,
+            "balance": client_balance,
+        },
+        "grids": grids_data,
+        "combined_profit": combined_profit,
     }

@@ -241,3 +241,34 @@ class UpdateUserStatusRequest(BaseModel):
 class ManageSubscriptionRequest(BaseModel):
     plan_name: str                              # "monthly", "quarterly", etc.
     end_date: str                               # ISO timestamp (YYYY-MM-DDTHH:MM:SS)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3 MODELS — Client Sync Protocol
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Client Ping (Section 8.1, 11.2) ─────────────────────────────────────────
+
+class Position(BaseModel):
+    """A single MT5 position as reported by the Client EA."""
+    ticket: int
+    symbol: str
+    type: str                                   # "BUY" or "SELL"
+    volume: float
+    price: float
+    profit: float
+    comment: str
+
+
+class ClientPingRequest(BaseModel):
+    """POST /api/client-ping payload (Section 8.1)."""
+    mt5_id: str
+    balance: float
+    positions: List[Position] = Field(default_factory=list)
+
+
+class SyncAction(BaseModel):
+    """A single trade instruction returned to the Client EA (Section 8.5)."""
+    action: str                                 # "BUY", "SELL", or "CLOSE_ALL"
+    volume: Optional[float] = None              # Required for BUY/SELL, absent for CLOSE_ALL
+    comment: str

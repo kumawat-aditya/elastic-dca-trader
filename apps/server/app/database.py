@@ -33,6 +33,7 @@ from app.models import (
     GridRow,
     GridRuntime,
     MarketState,
+    Position,
     Subscription,
     Tier,
     TierState,
@@ -632,3 +633,115 @@ def _row_to_subscription(row: asyncpg.Record) -> Subscription:
         end_date=row["end_date"],
         created_at=row["created_at"],
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3 — User Snapshots & Tier Client Queries (Section 8, 9.5, 11.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def get_user_by_mt5_id(mt5_id: str) -> User | None:
+    """Look up a user by MT5 account ID (Section 8.2: auth flow first step)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, email, password_hash, name, phone, mt5_id, assigned_tier_id,
+                   role, status, email_verified, created_at::text, updated_at::text
+            FROM users WHERE mt5_id = $1
+        """, mt5_id)
+        return _row_to_user(row) if row else None
+
+
+async def upsert_user_snapshot(user_id: int, balance: float,
+                                positions: list) -> None:
+    """
+    Save/update client EA snapshot on every ping (Section 8.2, 9.5).
+    Stores balance, positions JSONB, and updates last_seen timestamp.
+    """
+    pool = await get_pool()
+    positions_json = json.dumps(positions)
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO user_snapshots (user_id, balance, positions, last_seen)
+            VALUES ($1, $2, $3::jsonb, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET balance = $2, positions = $3::jsonb,
+                          last_seen = CURRENT_TIMESTAMP
+        """, user_id, balance, positions_json)
+
+
+async def get_user_snapshot(user_id: int) -> UserSnapshot | None:
+    """Get the latest snapshot for a user (dashboard, admin views)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT user_id, equity, balance, positions, last_seen::text
+            FROM user_snapshots WHERE user_id = $1
+        """, user_id)
+        if not row:
+            return None
+        positions_data = row["positions"]
+        if isinstance(positions_data, str):
+            positions_data = json.loads(positions_data)
+        return UserSnapshot(
+            user_id=row["user_id"],
+            equity=float(row["equity"]) if row["equity"] is not None else None,
+            balance=float(row["balance"]) if row["balance"] is not None else None,
+            positions=positions_data or [],
+            last_seen=row["last_seen"],
+        )
+
+
+async def get_clients_by_tier(tier_id: int) -> list[dict]:
+    """
+    Get all users assigned to a tier with their latest snapshot data.
+    Section 11.4: GET /api/admin/tiers/{tier_id}/clients
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT u.id, u.name, u.mt5_id,
+                   s.balance, s.positions, s.last_seen
+            FROM users u
+            LEFT JOIN user_snapshots s ON u.id = s.user_id
+            WHERE u.assigned_tier_id = $1 AND u.status = 'active'
+            ORDER BY u.id
+        """, tier_id)
+
+        clients = []
+        for r in rows:
+            positions_data = r["positions"]
+            if isinstance(positions_data, str):
+                positions_data = json.loads(positions_data)
+            position_count = len(positions_data) if positions_data else 0
+            # Connected: last_seen within 10 seconds (Section 11.4)
+            connected = False
+            if r["last_seen"]:
+                from datetime import datetime, timezone
+                try:
+                    last = r["last_seen"]
+                    if isinstance(last, datetime):
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=timezone.utc)
+                        connected = (datetime.now(timezone.utc) - last).total_seconds() < 10
+                except Exception:
+                    pass
+            clients.append({
+                "user_id": r["id"],
+                "name": r["name"],
+                "mt5_id": r["mt5_id"],
+                "balance": float(r["balance"]) if r["balance"] is not None else None,
+                "last_seen": str(r["last_seen"]) if r["last_seen"] else None,
+                "connected": connected,
+                "position_count": position_count,
+            })
+        return clients
+
+
+async def update_user_tier(user_id: int, tier_id: int | None) -> None:
+    """Update user's assigned_tier_id (Section 8.3: tier assignment)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users SET assigned_tier_id = $1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+        """, tier_id, user_id)

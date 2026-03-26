@@ -1,4 +1,6 @@
 
+### **Finalized System Flow Blueprint (v4)**
+
 **1. System Architecture & Protocols**
 *   **Modular Backend:** FastAPI framework logically divided into `app/main.py` (entry point), `app/api/v1/` (routers), `app/services/` (core logic), `app/models/` (Pydantic models), and `app/database/` (SQLite DB and ORM).
 *   **Communication Protocols:** 
@@ -7,8 +9,8 @@
 *   **Environment Configuration:** All major system constraints are customizable via a `.env` file so logic can be adjusted without touching source code. Key variables include:
     *   `EA_TIMEOUT_SECONDS=10` (Time before emergency reset).
     *   `CROSSOVER_TICK_COUNT=5` (Number of recent ticks in the queue required to confirm a price crossover).
-    *   `HEDGE_TP_PCT=100` (target to give EA relative to the reference_point and current market price).
-    *   `HEDGE_SL_PCT=50` (stop loss percentage relative to the tp calculated).
+    *   `HEDGE_TP_PCT=100` (Take profit distance as a percentage of the gap between the reference point and current market price).
+    *   `HEDGE_SL_PCT=50` (Stop loss distance as a percentage relative to the calculated TP distance).
 *   **Live Tick Feed:** Server maintains a rolling queue of ~120 ticks (2 minutes of 1-second pings) from the EA. This queue is used by the crossover functions to evaluate price action against limits and gaps.
 *   **Grid Independence:** The BUY grid and SELL grid are completely decoupled. They have independent lifecycles, hash session IDs, limits, targets, emergency states, and execution flows.
 
@@ -42,7 +44,12 @@
 
 **4. Risk Management (Target, SL, Hedging)**
 *   **Take Profit / Stop Loss:** Evaluates the exact cumulative grid PnL provided by the EA against the chosen type (Fixed $, Equity %, Balance %).
-*   **Hedging Flow:** If cumulative loss hits the Hedging $ input -> Grid execution pauses -> Server instructs EA to open an opposite trade (Volume = total grid cumulative lots) at market price with Hard TP = Hedging loss $, Hard SL = (Hedging loss / 2) $ -> UI shows "Hedge Triggered" with trade details -> Normal grid waits for TP/SL to hit. The hedge trade manages itself autonomously via MT5.
+*   **Hedging Flow:** If the cumulative loss hits the user's Hedging $ input -> Grid execution pauses -> Server calculates exact target prices for the hedge trade based on the `.env` settings:
+    *   **Distance Base:** Absolute value of (`reference_point` - `current_market_price`).
+    *   **TP Distance:** `Distance Base` * (`HEDGE_TP_PCT` / 100).
+    *   **SL Distance:** `TP Distance` * (`HEDGE_SL_PCT` / 100).
+    *   **Action:** The server instructs the EA to open an opposite trade (Volume = total grid cumulative lots) at the current market price, assigning it the calculated Hard TP Price and Hard SL Price based on the distances above. 
+    *   **Outcome:** The UI displays "Hedge Triggered" with the calculated TP/SL trade details. The normal grid stops executing new rows and simply waits for its own TP/SL to hit, while the hedge trade manages itself entirely autonomously via MT5.
 
 **5. Server-EA Synchronization & Failsafes**
 *   **Ping Cycle:** EA pings 1x/second via REST with MT ID, Equity, Balance, Symbol, Ask, Bid, and Open Positions.

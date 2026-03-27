@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
 //|                                                TradingClient.mq5 |
-//|                                    Elastic DCA Trading Client v3 |
+//|                                    Elastic DCA Trading Client v4 |
 //|                           Execution Bridge for Elastic DCA Engine|
 //+------------------------------------------------------------------+
 #property copyright "Elastic DCA System"
 #property link "https://github.com/kumawat-aditya/elastic-dca-trader"
-#property version "3.4.2"
+#property version "4.0.0"
 #property strict
 
 //--- Input Parameters ---
 // input string InpServerURL   = "http://127.0.0.1:8000"; for dev
-input string InpServerURL = "http://YOUR_SERVER_IP:8000"; // Server URL
+input string InpServerURL = "http://YOUR_SERVER_IP:8000"; // Server Base URL
 input int InpTimeout = 5000;                              // Request timeout (ms)
 input int InpMagicNumber = 789456;                        // Magic number for trades
 input int InpSlippage = 10;                               // Slippage in points
@@ -25,6 +25,10 @@ datetime g_LastTickTime = 0;
 int g_ConsecutiveErrors = 0;
 bool g_ServerReachable = true;
 
+// Indicator Handles for Trend
+int g_HandleH1 = INVALID_HANDLE;
+int g_HandleH4 = INVALID_HANDLE;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -36,11 +40,15 @@ int OnInit()
    g_Symbol = _Symbol;
    g_Digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
+   // Initialize Trend Indicators (20 SMA)
+   g_HandleH1 = iMA(g_Symbol, PERIOD_H1, 20, 0, MODE_SMA, PRICE_CLOSE);
+   g_HandleH4 = iMA(g_Symbol, PERIOD_H4, 20, 0, MODE_SMA, PRICE_CLOSE);
+
    // Set timer for 1-second polling (Heartbeat)
    EventSetTimer(1);
 
    Print("==================================================");
-   Print("Elastic DCA Client v3.4.2 Initialized");
+   Print("Elastic DCA Client v4.0.0 Initialized");
    Print("Status: Waiting for Server Command...");
    Print("==================================================");
    Print("Broker: ", g_BrokerName);
@@ -61,37 +69,12 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-
-   string reasonText = "";
-   switch (reason)
-   {
-   case REASON_PROGRAM:
-      reasonText = "Program terminated";
-      break;
-   case REASON_REMOVE:
-      reasonText = "EA removed from chart";
-      break;
-   case REASON_RECOMPILE:
-      reasonText = "EA recompiled";
-      break;
-   case REASON_CHARTCHANGE:
-      reasonText = "Chart changed";
-      break;
-   case REASON_CHARTCLOSE:
-      reasonText = "Chart closed";
-      break;
-   case REASON_PARAMETERS:
-      reasonText = "Parameters changed";
-      break;
-   case REASON_ACCOUNT:
-      reasonText = "Account changed";
-      break;
-   default:
-      reasonText = "Unknown reason";
-   }
+   
+   if(g_HandleH1 != INVALID_HANDLE) IndicatorRelease(g_HandleH1);
+   if(g_HandleH4 != INVALID_HANDLE) IndicatorRelease(g_HandleH4);
 
    Print("==================================================");
-   Print("Elastic DCA Client Stopped: ", reasonText);
+   Print("Elastic DCA Client Stopped. Reason: ", reason);
    Print("==================================================");
 }
 
@@ -121,6 +104,24 @@ void OnTimer()
 }
 
 //+------------------------------------------------------------------+
+//| Calculate Trend helper                                           |
+//+------------------------------------------------------------------+
+string GetTrend(int handle, ENUM_TIMEFRAMES tf)
+{
+   if(handle == INVALID_HANDLE) return "neutral";
+   
+   double ma[1];
+   double close[1];
+   
+   if(CopyBuffer(handle, 0, 0, 1, ma) <= 0) return "neutral";
+   if(CopyClose(g_Symbol, tf, 0, 1, close) <= 0) return "neutral";
+   
+   if(close[0] > ma[0]) return "up";
+   if(close[0] < ma[0]) return "down";
+   return "neutral";
+}
+
+//+------------------------------------------------------------------+
 //| Build JSON payload with account and position data                |
 //+------------------------------------------------------------------+
 string BuildTickPayload()
@@ -146,6 +147,8 @@ string BuildTickPayload()
    json += "\"symbol\":\"" + g_Symbol + "\",";
    json += "\"ask\":" + DoubleToString(ask, g_Digits) + ",";
    json += "\"bid\":" + DoubleToString(bid, g_Digits) + ",";
+   json += "\"trend_h1\":\"" + GetTrend(g_HandleH1, PERIOD_H1) + "\",";
+   json += "\"trend_h4\":\"" + GetTrend(g_HandleH4, PERIOD_H4) + "\",";
    json += "\"positions\":[";
 
    // Add all open positions
@@ -209,7 +212,8 @@ void SendTickToServer(string jsonPayload)
 
    // Send POST request
    ResetLastError();
-   string url = InpServerURL + "/api/tick";
+   // Endpoint updated to V4 structure
+   string url = InpServerURL + "/api/v1/ea/tick";
    int statusCode = WebRequest("POST", url, headers, InpTimeout, data, result, resultHeaders);
 
    // Handle response
@@ -219,138 +223,101 @@ void SendTickToServer(string jsonPayload)
       g_ServerReachable = true;
 
       string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-      ProcessServerResponse(response);
+      ProcessBulkServerResponse(response);
    }
-   else if (statusCode == 204)
+   else if (statusCode != 204)
    {
-      // No content - heartbeat OK (Waiting state)
-      g_ConsecutiveErrors = 0;
-      g_ServerReachable = true;
-   }
-   else if (statusCode == -1)
-   {
-      // Request failed
-      int error = GetLastError();
       g_ConsecutiveErrors++;
-
-      if (error == 4060)
-      {
-         Print("[ERROR] WebRequest not allowed! Add server URL to allowed list:");
-         Print("  Tools -> Options -> Expert Advisors -> Allow WebRequest for:");
-         Print("  ", InpServerURL);
-         g_ServerReachable = false;
-      }
-      else
-      {
-         // Only log sporadic errors to avoid spamming journal
-         if (g_ConsecutiveErrors % 20 == 1)
-         {
-            Print("[CONN] Connection failed. Code: ", error, " (", g_ConsecutiveErrors, " retries)");
-         }
-      }
-   }
-   else
-   {
-      // Server error (500, 404, etc)
-      g_ConsecutiveErrors++;
-      if (g_ConsecutiveErrors % 10 == 1)
-      {
-         Print("[SERVER ERROR] Status: ", statusCode);
-      }
+      if(g_ConsecutiveErrors % 20 == 1) Print("[SERVER ERROR] Status: ", statusCode, " Err: ", GetLastError());
    }
 }
 
 //+------------------------------------------------------------------+
-//| Process server response and execute actions                      |
+//| Bulk Actions Parser (Loops through multiple actions concurrently)|
 //+------------------------------------------------------------------+
-void ProcessServerResponse(string response)
+void ProcessBulkServerResponse(string response)
 {
-   if (response == "")
+   if (response == "") 
       return;
 
-   // Parse action
-   string action = ExtractJsonValue(response, "action");
+   // Locate the actions array
+   int arrayStart = StringFind(response, "[");
+   int arrayEnd = StringFind(response, "]", arrayStart);
+   
+   if (arrayStart == -1 || arrayEnd == -1) return;
+
+   string arrayStr = StringSubstr(response, arrayStart + 1, arrayEnd - arrayStart - 1);
+   int objStart = 0;
+
+   // Loop through all JSON objects inside the array
+   while(true)
+   {
+      objStart = StringFind(arrayStr, "{", objStart);
+      if (objStart == -1) break;
+      
+      int objEnd = StringFind(arrayStr, "}", objStart);
+      if (objEnd == -1) break;
+
+      string objStr = StringSubstr(arrayStr, objStart, objEnd - objStart + 1);
+      ProcessSingleActionObject(objStr);
+
+      objStart = objEnd + 1;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Action Router (Executes the parsed JSON object command)          |
+//+------------------------------------------------------------------+
+void ProcessSingleActionObject(string obj)
+{
+   string action = ExtractJsonValue(obj, "action");
 
    if (action == "" || action == "WAIT")
       return; // No action needed
 
-   if (InpDebugMode)
-   {
-      Print("[SERVER] Action: ", action);
-   }
+   if (InpDebugMode) 
+      Print("[SERVER ACTION] ", action, " | Payload: ", obj);
 
-   // Handle CLOSE_ALL (Snap-Back or Panic)
+   // 1. CLOSE_ALL (Cycle Cleanup or Zombie Cleanup)
    if (action == "CLOSE_ALL")
    {
-      string comment = ExtractJsonValue(response, "comment");
-
-      if (comment == "")
-      {
-         Print("[WARN] CLOSE_ALL received but no comment specified");
-         return;
-      }
-
-      // Check for special keywords
-      if (comment == "server" || comment == "EMERGENCY" || comment == "CLOSE_ALL_EMERGENCY")
-      {
-         Print("[ACTION] EMERGENCY CLOSE ALL POSITIONS");
-         CloseAllPositions();
-         return;
-      }
-
-      // Otherwise, it's a hash ID (buy_XXXXXXXX or sell_XXXXXXXX)
-      // Close only positions matching this hash
+      string comment = ExtractJsonValue(obj, "comment");
+      if (comment != "") 
       Print("[ACTION] Closing positions with ID: ", comment);
       ClosePositionsByComment(comment);
-
       return;
    }
 
-   // Handle BUY (Elastic Expansion)
-   if (action == "BUY")
+   // 2. GRID BUY / SELL (No SL/TP)
+   if (action == "BUY" || action == "SELL")
    {
-      string sVolume = ExtractJsonValue(response, "volume");
-      double volume = StringToDouble(sVolume);
-      string comment = ExtractJsonValue(response, "comment");
-      bool alert = ExtractJsonBool(response, "alert");
+      double volume = StringToDouble(ExtractJsonValue(obj, "volume"));
+      string comment = ExtractJsonValue(obj, "comment");
 
       if (volume > 0 && comment != "")
       {
-         if (alert)
-         {
-            Alert("🟢 BUY SIGNAL: ", g_Symbol, " | Volume: ", volume, " | ", comment);
-         }
-         ExecuteBuyOrder(volume, comment);
+         if (action == "BUY") 
+            ExecuteOrder(ORDER_TYPE_BUY, volume, comment, 0.0, 0.0);
+         else 
+            ExecuteOrder(ORDER_TYPE_SELL, volume, comment, 0.0, 0.0);
       }
-      else
-      {
-         Print("[WARN] Invalid BUY signal - Volume: ", volume, ", Comment: ", comment);
-      }
-
       return;
    }
 
-   // Handle SELL (Elastic Expansion)
-   if (action == "SELL")
+   // 3. HEDGE (Requires exact SL and TP from server)
+   if (action == "HEDGE")
    {
-      string sVolume = ExtractJsonValue(response, "volume");
-      double volume = StringToDouble(sVolume);
-      string comment = ExtractJsonValue(response, "comment");
-      bool alert = ExtractJsonBool(response, "alert");
+      string typeStr = ExtractJsonValue(obj, "type");
+      double volume = StringToDouble(ExtractJsonValue(obj, "volume"));
+      double tp = StringToDouble(ExtractJsonValue(obj, "tp"));
+      double sl = StringToDouble(ExtractJsonValue(obj, "sl"));
+      string comment = ExtractJsonValue(obj, "comment");
 
-      if (volume > 0 && comment != "")
+      if (volume > 0 && comment != "" && tp > 0 && sl > 0)
       {
-         if (alert)
-         {
-            Alert("🔴 SELL SIGNAL: ", g_Symbol, " | Volume: ", volume, " | ", comment);
-         }
-         ExecuteSellOrder(volume, comment);
+         ENUM_ORDER_TYPE orderType = (typeStr == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         ExecuteOrder(orderType, volume, comment, sl, tp);
       }
-      else
-      {
-         Print("[WARN] Invalid SELL signal - Volume: ", volume, ", Comment: ", comment);
-      }
-
       return;
    }
 
@@ -358,87 +325,15 @@ void ProcessServerResponse(string response)
 }
 
 //+------------------------------------------------------------------+
-//| Extract value from JSON string (Simple Parser)                   |
+//| Unified Execution Function for BUY, SELL, and HEDGE              |
 //+------------------------------------------------------------------+
-string ExtractJsonValue(string json, string key)
+void ExecuteOrder(ENUM_ORDER_TYPE type, double lots, string comment, double sl, double tp)
 {
-   string search = "\"" + key + "\"";
-   int pos = StringFind(json, search);
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(g_Symbol, SYMBOL_ASK) : SymbolInfoDouble(g_Symbol, SYMBOL_BID);
 
-   if (pos == -1)
-      return "";
-
-   // Find the colon after key
-   pos = StringFind(json, ":", pos);
-   if (pos == -1)
-      return "";
-
-   pos++; // Move past colon
-
-   // Skip whitespace
-   while (pos < StringLen(json))
+   if (price <= 0)
    {
-      ushort c = StringGetCharacter(json, pos);
-      if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
-         break;
-      pos++;
-   }
-
-   // Check if value is string (starts with quote)
-   bool isString = false;
-   if (StringGetCharacter(json, pos) == '"')
-   {
-      isString = true;
-      pos++; // Skip opening quote
-   }
-
-   // Find end of value
-   int endPos = pos;
-
-   if (isString)
-   {
-      // Find closing quote
-      while (endPos < StringLen(json))
-      {
-         if (StringGetCharacter(json, endPos) == '"')
-            break;
-         endPos++;
-      }
-   }
-   else
-   {
-      // Find comma, closing brace, or end
-      while (endPos < StringLen(json))
-      {
-         ushort c = StringGetCharacter(json, endPos);
-         if (c == ',' || c == '}' || c == ']' || c == ' ')
-            break;
-         endPos++;
-      }
-   }
-
-   return StringSubstr(json, pos, endPos - pos);
-}
-
-//+------------------------------------------------------------------+
-//| Extract boolean value from JSON string                           |
-//+------------------------------------------------------------------+
-bool ExtractJsonBool(string json, string key)
-{
-   string value = ExtractJsonValue(json, key);
-   return (value == "true" || value == "True" || value == "1");
-}
-
-//+------------------------------------------------------------------+
-//| Execute BUY order                                                |
-//+------------------------------------------------------------------+
-void ExecuteBuyOrder(double lots, string comment)
-{
-   double ask = SymbolInfoDouble(g_Symbol, SYMBOL_ASK);
-
-   if (ask <= 0)
-   {
-      Print("[ERROR] Invalid ASK price: ", ask);
+      Print("[ERROR] Invalid Market Price");
       return;
    }
 
@@ -460,10 +355,13 @@ void ExecuteBuyOrder(double lots, string comment)
    request.action = TRADE_ACTION_DEAL;
    request.symbol = g_Symbol;
    request.volume = lots;
-   request.type = ORDER_TYPE_BUY;
-   request.price = ask;
-   request.sl = 0;
-   request.tp = 0;
+   request.type = type;
+   request.price = price;
+   
+   // Apply Hard SL/TP if provided (for Hedging)
+   request.sl = (sl > 0) ? NormalizeDouble(sl, g_Digits) : 0;
+   request.tp = (tp > 0) ? NormalizeDouble(tp, g_Digits) : 0;
+   
    request.deviation = InpSlippage;
    request.magic = InpMagicNumber;
    request.comment = comment;
@@ -473,103 +371,20 @@ void ExecuteBuyOrder(double lots, string comment)
    ResetLastError();
    bool sent = OrderSend(request, result);
 
-   if (sent && result.retcode == TRADE_RETCODE_DONE)
-   {
-      Print("[BUY] Order executed - Ticket: ", result.order,
-            ", Volume: ", lots,
-            ", Price: ", result.price,
-            ", Comment: ", comment);
-   }
-   else
-   {
-      Print("[ERROR] BUY order failed - Retcode: ", result.retcode,
-            ", Error: ", GetLastError(),
-            ", Comment: ", comment);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Execute SELL order                                               |
-//+------------------------------------------------------------------+
-void ExecuteSellOrder(double lots, string comment)
-{
-   double bid = SymbolInfoDouble(g_Symbol, SYMBOL_BID);
-
-   if (bid <= 0)
-   {
-      Print("[ERROR] Invalid BID price: ", bid);
-      return;
-   }
-
-   // Normalize volume
-   double minLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(g_Symbol, SYMBOL_VOLUME_STEP);
-
-   lots = MathMax(lots, minLot);
-   lots = MathMin(lots, maxLot);
-   lots = NormalizeDouble(lots / lotStep, 0) * lotStep;
-
-   // Prepare request
-   MqlTradeRequest request;
-   MqlTradeResult result;
-   ZeroMemory(request);
-   ZeroMemory(result);
-
-   request.action = TRADE_ACTION_DEAL;
-   request.symbol = g_Symbol;
-   request.volume = lots;
-   request.type = ORDER_TYPE_SELL;
-   request.price = bid;
-   request.sl = 0;
-   request.tp = 0;
-   request.deviation = InpSlippage;
-   request.magic = InpMagicNumber;
-   request.comment = comment;
-   request.type_filling = GetOrderFillingType();
-
-   // Send order
-   ResetLastError();
-   bool sent = OrderSend(request, result);
+   string typeStr = (type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
 
    if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
-      Print("[SELL] Order executed - Ticket: ", result.order,
-            ", Volume: ", lots,
-            ", Price: ", result.price,
-            ", Comment: ", comment);
+      Print("[EXECUTE] ", typeStr, " OK - Ticket: ", result.order, " | Vol: ", lots, " | Price: ", result.price, " | Comment: ", comment);
    }
    else
    {
-      Print("[ERROR] SELL order failed - Retcode: ", result.retcode,
-            ", Error: ", GetLastError(),
-            ", Comment: ", comment);
+      Print("[ERROR] ", typeStr, " FAILED - Retcode: ", result.retcode, " | Err: ", GetLastError(), " | Comment: ", comment);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Close all positions (EMERGENCY)                                      |
-//+------------------------------------------------------------------+
-void CloseAllPositions()
-{
-   int total = PositionsTotal();
-   int closed = 0;
-
-   for (int i = total - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if (ticket > 0 && PositionSelectByTicket(ticket))
-      {
-         if (ClosePosition(ticket))
-            closed++;
-      }
-   }
-
-   Print("[CLOSE] Closed ", closed, " of ", total, " positions");
-}
-
-//+------------------------------------------------------------------+
-//| Close positions by Hash ID (Snap-Back)                           |
+//| Close positions by filter substring (Cleanup)                    |
 //+------------------------------------------------------------------+
 void ClosePositionsByComment(string commentFilter)
 {
@@ -577,28 +392,23 @@ void ClosePositionsByComment(string commentFilter)
    int closed = 0;
    int matched = 0;
 
+   // Loop backwards to safely delete items from the pool
    for (int i = total - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-
       if (ticket > 0 && PositionSelectByTicket(ticket))
       {
          string comment = PositionGetString(POSITION_COMMENT);
 
-         // Check if comment contains filter string (the hash ID)
+         // Check if comment contains filter string
          if (StringFind(comment, commentFilter) != -1)
          {
             matched++;
-            if (ClosePosition(ticket))
-               closed++;
+            if (ClosePosition(ticket)) closed++;
          }
       }
    }
-
-   if (InpDebugMode)
-   {
-      Print("[CLOSE] Found ", matched, " positions matching '", commentFilter, "', closed ", closed);
-   }
+   if (InpDebugMode && matched > 0) Print("[CLOSE] Matched '", commentFilter, "': ", matched, " | Closed: ", closed);
 }
 
 //+------------------------------------------------------------------+
@@ -606,20 +416,13 @@ void ClosePositionsByComment(string commentFilter)
 //+------------------------------------------------------------------+
 bool ClosePosition(ulong ticket)
 {
-   if (!PositionSelectByTicket(ticket))
-   {
-      Print("[ERROR] Position not found: ", ticket);
-      return false;
-   }
+   if (!PositionSelectByTicket(ticket)) return false;
 
    string symbol = PositionGetString(POSITION_SYMBOL);
    double volume = PositionGetDouble(POSITION_VOLUME);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
-   // Determine opposite order type
    ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
 
-   // Prepare close request
    MqlTradeRequest request;
    MqlTradeResult result;
    ZeroMemory(request);
@@ -634,23 +437,62 @@ bool ClosePosition(ulong ticket)
    request.magic = InpMagicNumber;
    request.type_filling = GetOrderFillingType();
 
-   // Send close request
    ResetLastError();
    bool sent = OrderSend(request, result);
 
-   if (sent && result.retcode == TRADE_RETCODE_DONE)
+   if (sent && result.retcode == TRADE_RETCODE_DONE) return true;
+   
+   Print("[ERROR] Failed to close ticket ", ticket, " - Retcode: ", result.retcode, " | Err: ", GetLastError());
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Simple JSON String Extractor                                     |
+//+------------------------------------------------------------------+
+string ExtractJsonValue(string json, string key)
+{
+   string search = "\"" + key + "\"";
+   int pos = StringFind(json, search);
+   if (pos == -1) return "";
+
+   pos = StringFind(json, ":", pos);
+   if (pos == -1) return "";
+   pos++;
+
+   while (pos < StringLen(json))
    {
-      if (InpDebugMode)
+      ushort c = StringGetCharacter(json, pos);
+      if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+      pos++;
+   }
+
+   bool isString = false;
+   if (StringGetCharacter(json, pos) == '"')
+   {
+      isString = true;
+      pos++; 
+   }
+
+   int endPos = pos;
+   if (isString)
+   {
+      while (endPos < StringLen(json))
       {
-         Print("[CLOSE] Position closed - Ticket: ", ticket, ", Profit: ", PositionGetDouble(POSITION_PROFIT));
+         if (StringGetCharacter(json, endPos) == '"') break;
+         endPos++;
       }
-      return true;
    }
    else
    {
-      Print("[ERROR] Failed to close position ", ticket, " - Retcode: ", result.retcode, ", Error: ", GetLastError());
-      return false;
+      while (endPos < StringLen(json))
+      {
+         ushort c = StringGetCharacter(json, endPos);
+         if (c == ',' || c == '}' || c == ']' || c == ' ') break;
+         endPos++;
+      }
    }
+
+   return StringSubstr(json, pos, endPos - pos);
 }
 
 //+------------------------------------------------------------------+

@@ -1,135 +1,200 @@
-# 📘 Quick Reference - API Field Mappings (v3.4.2)
 
-## 1. UserSettings Object
-**Endpoint:** `POST /api/update-settings`  
-**Updates:** Defines the Elastic Grid (Strata) and IronClad Risk limits.
+# 🌐 Elastic DCA v4 - Complete Integration Documentation
 
-```typescript
-interface UserSettings {
-  // --- BUY VECTOR SETTINGS ---
-  buy_limit_price: number;       // 0 = Market Entry, >0 = Pending Anchor
-  buy_tp_type: "equity_pct" | "balance_pct" | "fixed_money";
-  buy_tp_value: number;          // Snap-Back Target (e.g. 1.5% or $50)
-  buy_hedge_value: number;       // 🛡️ IRONCLAD: 0.0 = Off. Positive value = Lock at -$X loss
+This document serves as the **strict contract** for both the MetaTrader 5 (EA) developer and the Frontend Dashboard developer. 
 
-  // --- SELL VECTOR SETTINGS ---
-  sell_limit_price: number;
-  sell_tp_type: "equity_pct" | "balance_pct" | "fixed_money";
-  sell_tp_value: number;
-  sell_hedge_value: number;      // 🛡️ IRONCLAD
+### 🏗 Architecture Overview (Decoupled State Machine)
+1. **The Backend (FastAPI)** is the brain. It holds all grid logic, crossover math, limits, and dynamic calculations.
+2. **The EA (MetaTrader 5)** is the muscle. It knows *nothing* about grids, PnL math, or gaps. It reports the raw MT5 account state 1x per second and blindly loops through the array of commands the backend gives it.
+3. **The Frontend (Web UI)** is the monitor. It calculates *nothing*. It streams the backend's state via WebSockets to paint the UI, and sends REST requests to update settings or trigger actions.
 
-  // --- ELASTIC STRATA (Rows) ---
-  rows_buy: GridRow[];           // Array of Strata levels
-  rows_sell: GridRow[];          // Array of Strata levels
-}
+---
 
-interface GridRow {
-  index: number;
-  dollar: number;                // Gap distance from previous level
-  lots: number;                  // Volume for this strata
-  alert: boolean;                // UI Audio Alert flag
-}
-```
+# 🤖 PART 1: MetaTrader 5 (EA) Developer Guide
 
-## 2. RuntimeState Object
-**Endpoint:** `GET /api/ui-data` (Inside the `runtime` key)  
-**Updates:** Added `hedge_triggered` flags.
+The EA's job is to run an infinite loop (using `OnTimer` set to 1 second). Every second, it sends the account state to the server, receives an array of actions, and executes them concurrently.
 
-```typescript
-interface RuntimeState {
-  // --- CONTROLS ---
-  buy_on: boolean;
-  sell_on: boolean;
-  cyclic_on: boolean;
+## 1. The Heartbeat Endpoint (REST)
+**`POST /api/v1/ea/tick`**
 
-  // --- VECTOR IDENTIFICATION ---
-  buy_id: string;                // Current Session Hash (e.g., "buy_a1b2...")
-  sell_id: string;
+This endpoint must be pinged exactly **once per second**. If the EA stops pinging for >`EA_TIMEOUT_SECONDS` (e.g., 10s), the Server triggers a hard disconnect and halts trading.
 
-  // --- PHASES ---
-  buy_waiting_limit: boolean;    // True if waiting for Anchor Price
-  sell_waiting_limit: boolean;
-  
-  buy_is_closing: boolean;       // True if Snap-Back TP hit, closing vector
-  sell_is_closing: boolean;
+### Request Payload (`TickData`)
+Gather all positions currently open on the account. Send them all. The server will filter out the ones it doesn't own.
 
-  // --- IRONCLAD STATES ---
-  buy_hedge_triggered: boolean;  // 🛑 True = Drawdown limit hit. Vector LOCKED.
-  sell_hedge_triggered: boolean;
-
-  // --- SYNC-SHIELD (LATENCY) ---
-  buy_last_order_sent_ts: number; // Timestamp of last API command sent
-  sell_last_order_sent_ts: number;
-
-  // --- EXECUTION MAP ---
-  // Maps Strata Index (string) to Statistics. 
-  buy_exec_map: Record<string, RowExecStats>; 
-  sell_exec_map: Record<string, RowExecStats>; 
-
-  // --- ANCHOR PRICES ---
-  buy_start_ref: number;         // The price where Strata 0 began
-  sell_start_ref: number;
-
-  // --- CRITICAL ---
-  error_status: string;          // If not empty, DISABLE CONTROLS. Conflict detected.
-}
-
-interface RowExecStats {
-  index: number;
-  entry_price: number;
-  lots: number;
-  profit: number;
-  timestamp: string;
+```json
+{
+  "account_id": "893412",
+  "equity": 10500.50,
+  "balance": 10000.00,
+  "symbol": "EURUSD",
+  "ask": 1.05010,
+  "bid": 1.05000,
+  "trend_h1": "up",      // EA calculates this (e.g., Moving Average) -> "up", "down", "neutral"
+  "trend_h4": "down",    // EA calculates this
+  "positions":[
+    {
+      "ticket": 1234567,
+      "symbol": "EURUSD",
+      "type": "BUY",     // Strictly "BUY" or "SELL"
+      "volume": 0.01,
+      "price": 1.04950,
+      "profit": 5.50,    // Floating PnL of this specific trade
+      "comment": "buy_a1b2c3d4_idx0" // CRITICAL: Server maps rows using this
+    }
+  ]
 }
 ```
 
-## 3. Control Commands
-**Endpoint:** `POST /api/control`
+### Response Payload (Bulk Action Commands)
+To prevent latency and missed trades during massive volatility, the Server sends **an array of actions**. The EA must loop through this `actions` array and execute them all in a single `OnTimer` cycle.
 
-```typescript
-// Toggle BUY Vector
-{ "buy_switch": true }  // or false
-
-// Toggle SELL Vector
-{ "sell_switch": true } // or false
-
-// Toggle CYCLIC ORBIT (Auto-Restart)
-{ "cyclic": true }      // or false
-
-// ⚠️ PANIC BUTTON (Closes EVERYTHING immediately)
-{ "emergency_close": true }
+#### Case A: Empty Queue (No Actions)
+The grid is waiting/paused. Do nothing.
+```json
+{ "actions":[] }
 ```
 
-## 4. Snap-Back TP Values (Enums)
+#### Case B: Multi-Row Gap Execution (News Event)
+The market dropped violently, crossing multiple grid rows simultaneously.
+```json
+{
+  "actions":[
+    { "action": "BUY", "volume": 0.01, "comment": "buy_a1b2_idx0" },
+    { "action": "BUY", "volume": 0.02, "comment": "buy_a1b2_idx1" }
+  ]
+}
+```
+*   **EA Rule:** Loop through the array. Fire `OrderSend` for both trades instantly. `SL` and `TP` must be `0` (Server manages soft limits). Apply the exact `comment`.
 
-| Frontend Label | Server Value (String) | Meaning |
-| :--- | :--- | :--- |
-| EQUITY % | `"equity_pct"` | % of Floating Equity |
-| BALANCE % | `"balance_pct"` | % of Fixed Balance |
-| FIXED $ | `"fixed_money"` | Specific Currency Amount |
-| *OFF* | *N/A* | Send `value: 0` to disable TP |
+#### Case C: Cycle Complete & Zombie Cleanup
+The cycle hit TP/SL, or the server detected leftover "zombie" trades from an old session.
+```json
+{
+  "actions":[
+    { "action": "CLOSE_ALL", "comment": "buy_old111" },
+    { "action": "BUY", "volume": 0.01, "comment": "buy_new222_idx0" }
+  ]
+}
+```
+*   **EA Rule:** 
+    1. For `CLOSE_ALL`: Loop through all open MT5 positions. If the MT5 position's comment **contains** `"buy_old111"`, close it immediately at market price.
+    2. Continue to the next array item and execute the new `BUY` order.
 
-## 5. UI Logic: States & Visuals
+#### Case D: `HEDGE` (Emergency Risk Lock)
+The grid hit maximum drawdown. The server calculates precise TP/SL.
+```json
+{
+  "actions":[
+    {
+      "action": "HEDGE",
+      "side": "buy",
+      "type": "SELL",
+      "volume": 0.15,
+      "tp": 1.04500,
+      "sl": 1.05500,
+      "comment": "hedge_buy_a1b2c3d4"
+    }
+  ]
+}
+```
+*   **EA Rule:** Open the trade. **Unlike normal grid trades, you MUST set the hard MT5 `tp` and `sl` prices provided by the server.** 
 
-### A. Calculating "Next Strata" (Blue Highlight)
-The "next" level to be executed is the count of currently executed levels.
-```typescript
-const buyNextIndex = Object.keys(runtime.buy_exec_map).length;
-const sellNextIndex = Object.keys(runtime.sell_exec_map).length;
+### 🛡️ EA Execution Rules & Slippage
+1.  **Slippage Rejection:** If the EA tries to open a `BUY` command but the broker rejects it due to high slippage/off-quotes, **do not retry**. The Server will see it missing on the next tick, safely map `$0.00` PnL to that row, and continue the sequence.
+2.  **Autonomous Cleanup:** If the EA sees open trades but the server keeps sending `[]` (empty actions), do nothing. The EA only acts when explicitly given an action in the array.
+
+---
+
+# 💻 PART 2: Frontend (UI) Developer Guide
+
+The frontend is a strict monitor/terminal. **Do not calculate prices, cumulative lots, or cumulative PnL on the frontend.**
+
+## 1. Live Data Stream (WebSocket)
+**`ws://<HOST>:<PORT>/api/v1/ui/ws`**
+
+Connect to this on mount. It streams the `SystemState` JSON every 1 second.
+*   **Market Data:** Bind UI to `current_ask`, `current_bid`, `current_mid`, `trend_h1`, `trend_h4`.
+*   **Grid Data:** Render tables using `buy_settings.rows` and `sell_settings.rows`.
+*   **Dynamic Math:** Bind your columns directly to the backend's `row.price`, `row.cumulative_lots`, and `row.cumulative_pnl`.
+*   **Emergency Banner:** If `buy_state.emergency_state == true`, show a massive red banner: *"Unknown Buy trades found on MT5. Please close them manually."*
+
+## 2. Grid Controls (ON/OFF/Cyclic)
+**`POST /api/v1/ui/control/{side}`** *(side = "buy" or "sell")*
+```json
+{
+  "is_on": true,
+  "is_cyclic": false
+}
+```
+*   **Behavior:** Sending `is_on: false` while running instantly commands the EA to close all active trades for that side and hard-resets the backend math.
+
+## 3. Alerts (Crucial Flow)
+**`POST /api/v1/ui/ack-alert/{side}/{index}`**
+
+When the WebSocket sends a row where `alert == true`, `executed == true`, and `alert_executed == false`, the frontend must:
+1. Play a notification sound or render a Toast popup.
+2. Immediately `POST` to `/api/v1/ui/ack-alert/buy/3` (if it was buy row index 3).
+3. The server will flip `alert_executed` to `true`. On the next WebSocket tick, you will see `alert_executed: true`, stopping the UI from re-playing the sound.
+
+## 4. Updating Grid Settings (Runtime Modifications)
+**`PUT /api/v1/ui/settings/{side}`**
+
+Send the ENTIRE `GridSettings` object to update rules. 
+
+### 🚨 Strict Editing Rules (The "Lock")
+Users can edit the grid while it is running (`is_on == true`), but **Executed Rows are mathematically locked**.
+1. If Row 0 has `executed: true` in the WS stream, you **MUST** send Row 0 back with the exact same `index`, `gap`, and `lots`. 
+2. If you change the `gap`/`lots` of an executed row, or delete it, the server will return a **400 Bad Request**.
+3. You *can* safely change `gap`/`lots` of unexecuted rows.
+4. You *can* safely toggle the `alert` boolean on any row at any time.
+
+*Example Payload:*
+```json
+{
+  "is_on": true,
+  "is_cyclic": true,
+  "start_limit": 1.0500,
+  "stop_limit": null,
+  "tp_type": "fixed",
+  "tp_value": 50.0,
+  "sl_type": "equity",
+  "sl_value": 5.0,
+  "hedging": 100.0,
+  "rows":[
+    { "index": 0, "gap": 10, "lots": 0.01, "alert": false }, // EXECUTED: Values locked
+    { "index": 1, "gap": 25, "lots": 0.02, "alert": true }   // UNEXECUTED: Gap safely changed to 25
+  ]
+}
+```
+*(Note: You do not need to send `price`, `cumulative_lots`, etc. The backend rebuilds them instantly).*
+
+## 5. Presets (Database Management)
+Presets **ONLY** store the grid rows. They do NOT store Limits, TP, SL, or Hedging data, because those vary depending on daily market conditions.
+
+**Save a Preset:**
+`POST /api/v1/ui/presets`
+```json
+{
+  "name": "Aggressive Scalper",
+  "rows":[
+    { "index": 0, "gap": 5, "lots": 0.01, "alert": false },
+    { "index": 1, "gap": 10, "lots": 0.02, "alert": false }
+  ]
+}
 ```
 
-### B. Triggering Alerts (Strata Expansion)
-Iterate through executed rows in `runtime`. If `settings.rows[index].alert === true`:
-*   **UI:** Play Sound & Show "Acknowledge" Modal.
-*   **Action:** Clicking Acknowledge sends `{ alert: false }` for that row index via `update-settings`.
+**Get Presets:**
+`GET /api/v1/ui/presets`
+Returns an array of preset objects for your dropdown menu.
 
-### C. Anchor Pending (Yellow Status)
-If `runtime.buy_waiting_limit === true`:
-*   **Status:** "⏳ Waiting for Anchor < [limit_price]"
-*   **Input:** Allow user to adjust Limit Price in real-time.
+**Load a Preset:**
+`POST /api/v1/ui/presets/{preset_id}/load/{side}` (No body required)
+*   **Behavior:** The server will reject this (400 Bad Request) if the target grid is `is_on == true`. The user must turn the grid OFF before applying a preset. Once loaded, the WebSocket instantly updates the table with the pre-calculated `cumulative_lots`.
 
-### D. IronClad Lock (Red/Frozen Status)
-If `runtime.buy_hedge_triggered === true`:
-*   **Status:** "🛑 IRONCLAD LOCK ENGAGED"
-*   **Visual:** Red border/overlay on the Buy panel.
-*   **Logic:** Input fields for that side should be disabled. The system has deployed a counter-measure and manual intervention is now required to unlock.
+---
+
+### UI Developer Checklist:
+- [ ] **Row Highlighting:** Use `row.executed == true` to change row background colors so the user sees the market crossing grid levels.
+- [ ] **Data Binding:** Never do math on the frontend. Bind your UI directly to `row.cumulative_lots` and `row.cumulative_pnl`.
+- [ ] **Projected Prices:** `row.price` is `null` when the grid is OFF. Once it starts, `row.price` dynamically populates with the exact market prices the rows will trigger at. Show this in the table.

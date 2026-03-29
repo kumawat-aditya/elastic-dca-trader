@@ -1,8 +1,13 @@
 import time
 import uuid
 from collections import deque
-from app.models.schemas import SystemState, TickData
+from typing import List
+from app.models.schemas import SystemState, TickData, Position
 from app.config import settings
+from app.logger import get_logger
+
+# Initialize the logger for this file
+logger = get_logger(__name__)
 
 class DcaEngine:
     def __init__(self):
@@ -72,7 +77,7 @@ class DcaEngine:
         now = time.time()
         if self.state.ea_connected and (now - self.state.last_ea_ping_ts > settings.EA_TIMEOUT_SECONDS):
             self.state.ea_connected = False
-            print("[WARNING] EA Disconnected! Threshold exceeded. Resetting states.")
+            logger.warning("EA Disconnected! Threshold exceeded. Resetting states and halting engine.")
             
             # Disable Cyclic & Clear states for Buy
             self.state.buy_settings.is_cyclic = False
@@ -111,8 +116,9 @@ class DcaEngine:
         
         # 1. SCENARIO A: Server is OFF / Reset (No active session)
         if grid_state.session_id is None:
-            # If there are ANY trades for this side, it's a true emergency. User must manually fix.
             orphan_exists = any(p.comment.startswith(prefix) for p in positions)
+            if orphan_exists and not grid_state.emergency_state:
+                logger.warning(f"[{side.upper()}] EMERGENCY STATE: Orphaned MT5 trades detected while server grid is OFF.")
             grid_state.emergency_state = orphan_exists
             return
 
@@ -124,21 +130,18 @@ class DcaEngine:
         zombie_sessions = set()
         for p in positions:
             if p.comment.startswith(prefix) and active_session not in p.comment:
-                # Extract the old session ID (e.g., "buy_a1b2c3d4_idx0" -> "buy_a1b2c3d4")
-                # Also handles leftover hedges (e.g., "hedge_buy_a1b2c3d4")
                 parts = p.comment.split("_idx")
                 if len(parts) > 0:
                     zombie_sessions.add(parts[0])
                     
         # Issue CLOSE_ALL commands for any zombie sessions found
         for old_session in zombie_sessions:
-            # Prevent spamming the queue if we already queued a close command for this session
             already_queued = any(
                 a["action"] == "CLOSE_ALL" and a["comment"] == old_session 
                 for a in self.pending_ea_actions
             )
             if not already_queued:
-                print(f"[{side.upper()}] ZOMBIE DETECTED: Leftover trades from {old_session}. Issuing CLOSE_ALL.")
+                logger.warning(f"[{side.upper()}] ZOMBIE DETECTED: Leftover trades from {old_session}. Queuing CLOSE_ALL.")
                 self.pending_ea_actions.append({
                     "action": "CLOSE_ALL", 
                     "comment": old_session
@@ -152,7 +155,7 @@ class DcaEngine:
             return
             
         # Filter EA positions belonging to THIS specific active session
-        session_positions =[p for p in positions if grid_state.session_id in p.comment]
+        session_positions = [p for p in positions if grid_state.session_id in p.comment]
         
         # Sum Cumulative
         grid_state.total_cumulative_lots = sum(p.volume for p in session_positions)
@@ -198,16 +201,17 @@ class DcaEngine:
             close_reason = "SL"
             
         if close_reason:
-            print(f"[{side.upper()}] {close_reason} Hit! PnL: ${pnl:.2f}. Closing Session: {grid_state.session_id}")
+            logger.info(f"[{side.upper()}] {close_reason} Hit! PnL: ${pnl:.2f}. Closing Session: {grid_state.session_id}")
             
-            # Send close command to EA
             self.pending_ea_actions.append({
                 "action": "CLOSE_ALL",
                 "comment": grid_state.session_id
             })
             
-            # Cyclic Logic
             is_cyclic = grid_settings.is_cyclic
+            if is_cyclic:
+                logger.info(f"[{side.upper()}] Cyclic Restart Enabled. Preparing for new cycle.")
+            
             self._clear_grid_cycle(side, hard_reset=not is_cyclic)
 
     # --- HEDGING MATH LOGIC ---
@@ -233,6 +237,8 @@ class DcaEngine:
                 hard_tp, hard_sl = current_market_price + tp_distance, current_market_price - sl_distance
                 trade_type = "BUY"
                 
+            logger.info(f"[{side.upper()}] HEDGE TRIGGERED! Loss: ${grid_state.total_cumulative_pnl:.2f} <= Limit: -${grid_settings.hedging}. Deploying {trade_type} Volume: {grid_state.total_cumulative_lots}")
+            
             self.pending_ea_actions.append({
                 "action": "HEDGE",
                 "side": side,
@@ -248,7 +254,6 @@ class DcaEngine:
         grid_settings = self.state.buy_settings if side == "buy" else self.state.sell_settings
         grid_state = self.state.buy_state if side == "buy" else self.state.sell_state
         
-        # Strict validation before starting a cycle
         if not grid_settings.is_on or grid_state.session_id is not None or grid_state.emergency_state:
             return
             
@@ -264,8 +269,8 @@ class DcaEngine:
 
         if should_start:
             grid_state.session_id = self.generate_session_id(side)
-            # Anchor to REAL market price regardless of the limit trigger
             grid_state.reference_point = self.state.current_ask if side == "buy" else self.state.current_bid
+            logger.info(f"[{side.upper()}] Cycle Initiated! Session: {grid_state.session_id} | Anchor: {grid_state.reference_point}")
             self.recalculate_grid_math(side)
 
     # --- ROW EXECUTION LOGIC ---
@@ -285,6 +290,7 @@ class DcaEngine:
                 
             if is_triggered:
                 row.executed = True
+                logger.info(f"[{side.upper()}] Row {row.index} Crossover! Target: {row.price}. Queuing EA Action.")
                 self.pending_ea_actions.append({
                     "action": "BUY" if side == "buy" else "SELL",
                     "volume": row.lots,
@@ -293,6 +299,7 @@ class DcaEngine:
 
     # --- HELPERS ---
     def _clear_grid_cycle(self, side: str, hard_reset: bool = False):
+        logger.debug(f"[{side.upper()}] Clearing grid cycle data (hard_reset={hard_reset})")
         settings_ref = self.state.buy_settings if side == "buy" else self.state.sell_settings
         state_ref = self.state.buy_state if side == "buy" else self.state.sell_state
         
@@ -301,7 +308,6 @@ class DcaEngine:
             state_ref.session_id = None
             state_ref.reference_point = None
             
-        # Fix 3: These must ALWAYS clear, even on cyclic restarts!
         state_ref.is_hedged = False
         state_ref.total_cumulative_pnl = 0.0
         state_ref.total_cumulative_lots = 0.0

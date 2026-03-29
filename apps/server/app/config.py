@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     HEDGE_TP_PCT: float = 100.0
     HEDGE_SL_PCT: float = 50.0
 
+    # Logging
+    LOG_LEVEL: str = "INFO"  # Default to INFO if not in .env
+
     class Config:
         env_file = ".env"
 

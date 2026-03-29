@@ -41,4 +41,4 @@ async def receive_tick(tick: TickData):
     except Exception as e:
         # exc_info=True will print the full traceback to the logs for easier debugging
         logger.error(f"System Error during EA Tick processing: {e}", exc_info=True)
-        return {"actions":
+        return {"actions":[]} 

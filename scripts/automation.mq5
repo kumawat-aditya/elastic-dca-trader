@@ -8,13 +8,22 @@
 #property version "4.0.0"
 #property strict
 
+//--- Log Level Enum ---
+enum ENUM_LOG_LEVEL 
+{
+   LOG_LEVEL_ERROR = 0,   // Error
+   LOG_LEVEL_WARNING = 1, // Warning
+   LOG_LEVEL_INFO = 2,    // Info
+   LOG_LEVEL_DEBUG = 3    // Debug
+};
+
 //--- Input Parameters ---
 // input string InpServerURL   = "http://127.0.0.1:8000"; for dev
-input string InpServerURL = "http://YOUR_SERVER_IP:8000"; // Server Base URL
-input int InpTimeout = 5000;                              // Request timeout (ms)
-input int InpMagicNumber = 789456;                        // Magic number for trades
-input int InpSlippage = 10;                               // Slippage in points
-input bool InpDebugMode = true;                           // Enable debug logging
+input string         InpServerURL   = "http://YOUR_SERVER_IP:8000"; // Server Base URL
+input int            InpTimeout     = 5000;                         // Request timeout (ms)
+input int            InpMagicNumber = 789456;                       // Magic number for trades
+input int            InpSlippage    = 10;                           // Slippage in points
+input ENUM_LOG_LEVEL InpLogLevel    = LOG_LEVEL_INFO;               // Logging Level
 
 //--- Global Variables ---
 string g_BrokerName = "";
@@ -28,6 +37,26 @@ bool g_ServerReachable = true;
 // Indicator Handles for Trend
 int g_HandleH1 = INVALID_HANDLE;
 int g_HandleH4 = INVALID_HANDLE;
+
+//+------------------------------------------------------------------+
+//| Centralized Logging Helper                                       |
+//+------------------------------------------------------------------+
+void LogMessage(ENUM_LOG_LEVEL level, string message)
+{
+   // Skip if the message level is higher than the user's selected input
+   if (level > InpLogLevel) return;
+   
+   string prefix = "";
+   switch(level)
+   {
+      case LOG_LEVEL_ERROR:   prefix = "[ERROR] "; break;
+      case LOG_LEVEL_WARNING: prefix = "[WARN]  "; break;
+      case LOG_LEVEL_INFO:    prefix = "[INFO]  "; break;
+      case LOG_LEVEL_DEBUG:   prefix = "[DEBUG] "; break;
+   }
+   
+   Print(prefix + message);
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -47,18 +76,18 @@ int OnInit()
    // Set timer for 1-second polling (Heartbeat)
    EventSetTimer(1);
 
-   Print("==================================================");
-   Print("Elastic DCA Client v4.0.0 Initialized");
-   Print("Status: Waiting for Server Command...");
-   Print("==================================================");
-   Print("Broker: ", g_BrokerName);
-   Print("Account: ", g_AccountID);
-   Print("Symbol: ", g_Symbol);
-   Print("Engine: ", InpServerURL);
-   Print("==================================================");
-   Print("IMPORTANT: Ensure server URL is whitelisted in:");
-   Print("Tools -> Options -> Expert Advisors -> Allow WebRequest");
-   Print("==================================================");
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
+   LogMessage(LOG_LEVEL_INFO, "Elastic DCA Client v4.0.0 Initialized");
+   LogMessage(LOG_LEVEL_INFO, "Status: Waiting for Server Command...");
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
+   LogMessage(LOG_LEVEL_INFO, "Broker: " + g_BrokerName);
+   LogMessage(LOG_LEVEL_INFO, "Account: " + g_AccountID);
+   LogMessage(LOG_LEVEL_INFO, "Symbol: " + g_Symbol);
+   LogMessage(LOG_LEVEL_INFO, "Engine: " + InpServerURL);
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
+   LogMessage(LOG_LEVEL_INFO, "IMPORTANT: Ensure server URL is whitelisted in:");
+   LogMessage(LOG_LEVEL_INFO, "Tools -> Options -> Expert Advisors -> Allow WebRequest");
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
 
    return (INIT_SUCCEEDED);
 }
@@ -73,9 +102,9 @@ void OnDeinit(const int reason)
    if(g_HandleH1 != INVALID_HANDLE) IndicatorRelease(g_HandleH1);
    if(g_HandleH4 != INVALID_HANDLE) IndicatorRelease(g_HandleH4);
 
-   Print("==================================================");
-   Print("Elastic DCA Client Stopped. Reason: ", reason);
-   Print("==================================================");
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
+   LogMessage(LOG_LEVEL_INFO, "Elastic DCA Client Stopped. Reason: " + IntegerToString(reason));
+   LogMessage(LOG_LEVEL_INFO, "==================================================");
 }
 
 //+------------------------------------------------------------------+
@@ -95,7 +124,7 @@ void OnTimer()
 
    if (jsonPayload == "")
    {
-      Print("[ERROR] Failed to build payload");
+      LogMessage(LOG_LEVEL_ERROR, "Failed to build JSON tick payload");
       return;
    }
 
@@ -135,7 +164,7 @@ string BuildTickPayload()
    // Validate prices
    if (ask <= 0 || bid <= 0)
    {
-      Print("[WARN] Invalid prices - Ask: ", ask, ", Bid: ", bid);
+      LogMessage(LOG_LEVEL_WARNING, "Invalid prices - Ask: " + DoubleToString(ask, g_Digits) + ", Bid: " + DoubleToString(bid, g_Digits));
       return "";
    }
 
@@ -185,9 +214,9 @@ string BuildTickPayload()
 
    json += "]}";
 
-   if (InpDebugMode && added > 0)
+   if (added > 0)
    {
-      Print("[INFO] Sending ", added, " positions to server");
+      LogMessage(LOG_LEVEL_DEBUG, "Sending " + IntegerToString(added) + " open positions to server");
    }
 
    return json;
@@ -227,8 +256,19 @@ void SendTickToServer(string jsonPayload)
    }
    else if (statusCode != 204)
    {
+      int error = GetLastError();
       g_ConsecutiveErrors++;
-      if(g_ConsecutiveErrors % 20 == 1) Print("[SERVER ERROR] Status: ", statusCode, " Err: ", GetLastError());
+
+      if (error == 4060)
+      {
+         LogMessage(LOG_LEVEL_ERROR, "WebRequest not allowed! Add server URL to allowed list:");
+         LogMessage(LOG_LEVEL_ERROR, "Tools -> Options -> Expert Advisors -> Allow WebRequest for: " + InpServerURL);
+         g_ServerReachable = false;
+      }
+      else if(g_ConsecutiveErrors % 10 == 1) 
+      {
+         LogMessage(LOG_LEVEL_ERROR, "Server Connection Error! HTTP Status: " + IntegerToString(statusCode) + " | MQL Err: " + IntegerToString(error));
+      }
    }
 }
 
@@ -275,16 +315,17 @@ void ProcessSingleActionObject(string obj)
    if (action == "" || action == "WAIT")
       return; // No action needed
 
-   if (InpDebugMode) 
-      Print("[SERVER ACTION] ", action, " | Payload: ", obj);
+   LogMessage(LOG_LEVEL_DEBUG, "Processing Action: " + action + " | Payload: " + obj);
 
    // 1. CLOSE_ALL (Cycle Cleanup or Zombie Cleanup)
    if (action == "CLOSE_ALL")
    {
       string comment = ExtractJsonValue(obj, "comment");
       if (comment != "") 
-      Print("[ACTION] Closing positions with ID: ", comment);
-      ClosePositionsByComment(comment);
+      {
+         LogMessage(LOG_LEVEL_INFO, "Server instructed CLOSE_ALL for Hash ID: " + comment);
+         ClosePositionsByComment(comment);
+      }
       return;
    }
 
@@ -315,13 +356,14 @@ void ProcessSingleActionObject(string obj)
 
       if (volume > 0 && comment != "" && tp > 0 && sl > 0)
       {
+         LogMessage(LOG_LEVEL_WARNING, "EMERGENCY HEDGE COMMAND RECEIVED! Deploying counter-measure.");
          ENUM_ORDER_TYPE orderType = (typeStr == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
          ExecuteOrder(orderType, volume, comment, sl, tp);
       }
       return;
    }
 
-   Print("[WARN] Unknown action: ", action);
+   LogMessage(LOG_LEVEL_WARNING, "Received Unknown Action from Server: " + action);
 }
 
 //+------------------------------------------------------------------+
@@ -333,7 +375,7 @@ void ExecuteOrder(ENUM_ORDER_TYPE type, double lots, string comment, double sl, 
 
    if (price <= 0)
    {
-      Print("[ERROR] Invalid Market Price");
+      LogMessage(LOG_LEVEL_ERROR, "ExecuteOrder Failed: Invalid Market Price returned by terminal.");
       return;
    }
 
@@ -375,11 +417,11 @@ void ExecuteOrder(ENUM_ORDER_TYPE type, double lots, string comment, double sl, 
 
    if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
-      Print("[EXECUTE] ", typeStr, " OK - Ticket: ", result.order, " | Vol: ", lots, " | Price: ", result.price, " | Comment: ", comment);
+      LogMessage(LOG_LEVEL_INFO, "[EXECUTE] " + typeStr + " OK - Ticket: " + IntegerToString(result.order) + " | Vol: " + DoubleToString(lots, 2) + " | Price: " + DoubleToString(result.price, g_Digits) + " | Comment: " + comment);
    }
    else
    {
-      Print("[ERROR] ", typeStr, " FAILED - Retcode: ", result.retcode, " | Err: ", GetLastError(), " | Comment: ", comment);
+      LogMessage(LOG_LEVEL_ERROR, "[ERROR] " + typeStr + " FAILED - Retcode: " + IntegerToString(result.retcode) + " | Err: " + IntegerToString(GetLastError()) + " | Comment: " + comment);
    }
 }
 
@@ -408,7 +450,11 @@ void ClosePositionsByComment(string commentFilter)
          }
       }
    }
-   if (InpDebugMode && matched > 0) Print("[CLOSE] Matched '", commentFilter, "': ", matched, " | Closed: ", closed);
+   
+   if (matched > 0) 
+   {
+      LogMessage(LOG_LEVEL_INFO, "[CLEANUP] Matched Hash '" + commentFilter + "': Found " + IntegerToString(matched) + " | Successfully Closed: " + IntegerToString(closed));
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -440,9 +486,13 @@ bool ClosePosition(ulong ticket)
    ResetLastError();
    bool sent = OrderSend(request, result);
 
-   if (sent && result.retcode == TRADE_RETCODE_DONE) return true;
+   if (sent && result.retcode == TRADE_RETCODE_DONE) 
+   {
+      LogMessage(LOG_LEVEL_DEBUG, "Closed Ticket: " + IntegerToString(ticket) + " successfully.");
+      return true;
+   }
    
-   Print("[ERROR] Failed to close ticket ", ticket, " - Retcode: ", result.retcode, " | Err: ", GetLastError());
+   LogMessage(LOG_LEVEL_ERROR, "Failed to close ticket " + IntegerToString(ticket) + " - Retcode: " + IntegerToString(result.retcode) + " | MQL Err: " + IntegerToString(GetLastError()));
    return false;
 }
 
@@ -504,7 +554,7 @@ ENUM_ORDER_TYPE_FILLING GetOrderFillingType()
    if (StringFind(g_BrokerName, "XM") != -1 ||
        StringFind(g_BrokerName, "Raw Trading") != -1 ||
        StringFind(g_BrokerName, "Royal ETP") != -1 ||
-       StringFind(g_BrokerName, "International Capital Markets") != -1 ||
+       StringFind(g_BrokerName, "International Capital") != -1 ||
        StringFind(g_BrokerName, "Atlas Funded") != -1)
    {
       return ORDER_FILLING_IOC;

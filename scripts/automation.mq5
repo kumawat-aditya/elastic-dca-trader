@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Elastic DCA System"
 #property link "https://github.com/kumawat-aditya/elastic-dca-trader"
-#property version "4.0.0"
+#property version "4.0"
 #property strict
 
 //--- Log Level Enum ---

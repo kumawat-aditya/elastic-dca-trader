@@ -75,6 +75,11 @@ class SystemState(BaseModel):
     
     ea_connected: bool = False
     last_ea_ping_ts: float = 0.0
+
+    account_id: str = ""
+    symbol: str = ""
+    equity: float = 0.0
+    balance: float = 0.0
     
     current_mid: float = 0.0
     current_ask: float = 0.0

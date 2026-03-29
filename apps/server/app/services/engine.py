@@ -19,6 +19,11 @@ class DcaEngine:
         self.state.last_ea_ping_ts = now
         self.state.ea_connected = True
         
+        self.state.account_id = tick.account_id
+        self.state.symbol = tick.symbol
+        self.state.equity = tick.equity
+        self.state.balance = tick.balance
+
         # Update Market Data
         self.state.current_ask = tick.ask
         self.state.current_bid = tick.bid

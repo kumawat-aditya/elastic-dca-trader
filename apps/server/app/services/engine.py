@@ -231,18 +231,39 @@ class DcaEngine:
             grid_state.is_hedged = True
             
             current_market_price = self.state.current_bid if side == "buy" else self.state.current_ask
+            ask = self.state.current_ask
+            bid = self.state.current_bid
+            spread_buffer = abs(ask - bid)
             distance_base = abs(grid_state.reference_point - current_market_price)
             tp_distance = distance_base * (settings.HEDGE_TP_PCT / 100.0)
             sl_distance = tp_distance * (settings.HEDGE_SL_PCT / 100.0)
             
             if side == "buy":
-                hard_tp = current_market_price - tp_distance
-                hard_sl = current_market_price + sl_distance
+                # Hedge = SELL
+                entry_price = bid  # SELL executes at BID
+                hard_tp = entry_price - tp_distance
+                hard_sl = entry_price + sl_distance
                 trade_type = "SELL"
+
             else:
-                hard_tp = current_market_price + tp_distance
-                hard_sl = current_market_price - sl_distance
+                # Hedge = BUY
+                entry_price = ask  # BUY executes at ASK
+                hard_tp = entry_price + tp_distance
+                hard_sl = entry_price - sl_distance
                 trade_type = "BUY"
+
+            # Final MT5-safe validation
+            if trade_type == "BUY":
+                if hard_sl >= bid:
+                    hard_sl = bid - (spread_buffer + 10)  # extra buffer
+                if hard_tp <= ask:
+                    hard_tp = ask + (spread_buffer + 10)
+
+            elif trade_type == "SELL":
+                if hard_sl <= ask:
+                    hard_sl = ask + (spread_buffer + 10)
+                if hard_tp >= bid:
+                    hard_tp = bid - (spread_buffer + 10)
                 
             logger.info(f"[{side.upper()}] HEDGE TRIGGERED! Loss: ${grid_state.total_cumulative_pnl:.2f} <= Limit: -${grid_settings.hedging}. Deploying {trade_type} Volume: {grid_state.total_cumulative_lots}")
             

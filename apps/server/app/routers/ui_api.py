@@ -25,6 +25,7 @@ async def dashboard_stream(websocket: WebSocket):
         while True:
             # Send the complete state as JSON
             await websocket.send_json(engine.state.model_dump())
+            print(engine.state.model_dump())
             await asyncio.sleep(1) # Sync with the 1-second EA ping
     except WebSocketDisconnect:
         print("[UI] Dashboard WebSocket Disconnected.")
@@ -129,14 +130,14 @@ def update_grid_settings(side: str, new_settings: GridSettings):
 
 class PresetCreate(BaseModel):
     name: str
-    settings: GridSettings
+    rows: List[GridRow]  # If this says 'settings: GridSettings', it causes the 422 error!
 
 @router.post("/presets")
 def save_preset(payload: PresetCreate, db: Session = Depends(get_db)):
     existing = db.query(PresetDB).filter(PresetDB.name == payload.name).first()
-    if existing: raise HTTPException(status_code=400, detail="Preset name already exists.")
+    if existing: 
+        raise HTTPException(status_code=400, detail="Preset name already exists.")
         
-    # Dump just the rows
     rows_json = json.dumps([r.model_dump() for r in payload.rows])
     new_preset = PresetDB(name=payload.name, rows_json=rows_json)
     db.add(new_preset)
@@ -147,7 +148,9 @@ def save_preset(payload: PresetCreate, db: Session = Depends(get_db)):
 def get_presets(db: Session = Depends(get_db)):
     """Returns a list of all saved presets."""
     presets = db.query(PresetDB).all()
-    return[{"id": p.id, "name": p.name, "settings": p.settings_json} for p in presets]
+    
+    # 2. FIX: Must use 'rows_json' and parse it back to a JSON list, NOT 'settings_json'
+    return[{"id": p.id, "name": p.name, "rows": json.loads(p.rows_json)} for p in presets]
 
 @router.post("/presets/{preset_id}/load/{side}")
 def load_preset(preset_id: int, side: str, db: Session = Depends(get_db)):

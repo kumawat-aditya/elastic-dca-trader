@@ -236,13 +236,23 @@ class DcaEngine:
             sl_distance = tp_distance * (settings.HEDGE_SL_PCT / 100.0)
             
             if side == "buy":
-                hard_tp, hard_sl = current_market_price - tp_distance, current_market_price + sl_distance
+                hard_tp = current_market_price - tp_distance
+                hard_sl = current_market_price + sl_distance
                 trade_type = "SELL"
             else:
-                hard_tp, hard_sl = current_market_price + tp_distance, current_market_price - sl_distance
+                hard_tp = current_market_price + tp_distance
+                hard_sl = current_market_price - sl_distance
                 trade_type = "BUY"
                 
             logger.info(f"[{side.upper()}] HEDGE TRIGGERED! Loss: ${grid_state.total_cumulative_pnl:.2f} <= Limit: -${grid_settings.hedging}. Deploying {trade_type} Volume: {grid_state.total_cumulative_lots}")
+            
+            # --- SAVE HEDGE DETAILS TO STATE FOR THE UI ---
+            grid_state.hedge_data = HedgeData(
+                entry_price=current_market_price,
+                sl=hard_sl,
+                tp=hard_tp,
+                lots=grid_state.total_cumulative_lots
+            )
             
             self.pending_ea_actions.append({
                 "action": "HEDGE",
@@ -315,6 +325,7 @@ class DcaEngine:
         state_ref.session_id = None
         state_ref.reference_point = None
         state_ref.is_hedged = False
+        state_ref.hedge_data = None
         state_ref.emergency_state = False
         state_ref.total_cumulative_lots = 0.0
         state_ref.total_cumulative_pnl = 0.0

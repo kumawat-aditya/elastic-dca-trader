@@ -55,12 +55,19 @@ class GridSettings(BaseModel):
     # Rows
     rows: List[GridRow] =[]
 
+class HedgeData(BaseModel):
+    entry_price: float
+    sl: float
+    tp: float
+    lots: float
+
 # --- System & Session State ---
 class GridState(BaseModel):
     """Tracks the live runtime metrics of a single grid side (Decoupled)"""
     session_id: Optional[str] = None
     reference_point: Optional[float] = None
     is_hedged: bool = False
+    hedge_data: Optional[HedgeData] = None
     emergency_state: bool = False
     total_cumulative_lots: float = 0.0
     total_cumulative_pnl: float = 0.0

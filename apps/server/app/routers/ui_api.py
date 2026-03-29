@@ -33,7 +33,7 @@ async def dashboard_stream(websocket: WebSocket):
             await websocket.send_json(state_dump)
             
             # Log as DEBUG so it doesn't spam the console on INFO level
-            logger.debug(f"Pushed state to UI: {state_dump}")
+            # logger.debug(f"Pushed state to UI: {state_dump}")
             
             await asyncio.sleep(1) # Sync with the 1-second EA ping
     except WebSocketDisconnect:
@@ -155,6 +155,7 @@ class PresetCreate(BaseModel):
 
 @router.post("/presets")
 def save_preset(payload: PresetCreate, db: Session = Depends(get_db)):
+    """Creates a new preset."""
     existing = db.query(PresetDB).filter(PresetDB.name == payload.name).first()
     if existing: 
         logger.warning(f"UI attempted to save preset with existing name: '{payload.name}'. Rejected.")
@@ -165,7 +166,7 @@ def save_preset(payload: PresetCreate, db: Session = Depends(get_db)):
     db.add(new_preset)
     db.commit()
     logger.info(f"Preset '{payload.name}' saved successfully to SQLite.")
-    return {"status": "success"}
+    return {"status": "success", "message": f"Preset '{payload.name}' saved."}
 
 @router.get("/presets")
 def get_presets(db: Session = Depends(get_db)):
@@ -174,6 +175,42 @@ def get_presets(db: Session = Depends(get_db)):
     logger.debug(f"Fetched {len(presets)} presets from SQLite.")
     
     return[{"id": p.id, "name": p.name, "rows": json.loads(p.rows_json)} for p in presets]
+
+@router.put("/presets/{preset_id}")
+def update_preset(preset_id: int, payload: PresetCreate, db: Session = Depends(get_db)):
+    """Updates an existing preset's name and rows."""
+    preset = db.query(PresetDB).filter(PresetDB.id == preset_id).first()
+    if not preset:
+        logger.warning(f"UI attempted to update non-existent preset ID: {preset_id}. Rejected.")
+        raise HTTPException(status_code=404, detail="Preset not found.")
+
+    # Check if the new name conflicts with a DIFFERENT existing preset
+    name_conflict = db.query(PresetDB).filter(PresetDB.name == payload.name, PresetDB.id != preset_id).first()
+    if name_conflict:
+        logger.warning(f"UI attempted to rename preset to existing name: '{payload.name}'. Rejected.")
+        raise HTTPException(status_code=400, detail="Preset name already exists.")
+
+    preset.name = payload.name
+    preset.rows_json = json.dumps([r.model_dump() for r in payload.rows])
+    db.commit()
+    
+    logger.info(f"Preset ID {preset_id} ('{preset.name}') updated successfully.")
+    return {"status": "success", "message": f"Preset '{preset.name}' updated."}
+
+@router.delete("/presets/{preset_id}")
+def delete_preset(preset_id: int, db: Session = Depends(get_db)):
+    """Deletes an existing preset."""
+    preset = db.query(PresetDB).filter(PresetDB.id == preset_id).first()
+    if not preset:
+        logger.warning(f"UI attempted to delete non-existent preset ID: {preset_id}. Rejected.")
+        raise HTTPException(status_code=404, detail="Preset not found.")
+
+    preset_name = preset.name
+    db.delete(preset)
+    db.commit()
+    
+    logger.info(f"Preset ID {preset_id} ('{preset_name}') deleted successfully.")
+    return {"status": "success", "message": f"Preset '{preset_name}' deleted."}
 
 @router.post("/presets/{preset_id}/load/{side}")
 def load_preset(preset_id: int, side: str, db: Session = Depends(get_db)):

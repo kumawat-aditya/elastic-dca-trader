@@ -2,7 +2,7 @@ import time
 import uuid
 from collections import deque
 from typing import List
-from app.models.schemas import SystemState, TickData, Position
+from app.models.schemas import SystemState, TickData, Position, HedgeData
 from app.config import settings
 from app.logger import get_logger
 
@@ -15,12 +15,17 @@ class DcaEngine:
         # Rolling queue for the last ~120 ticks (2 minutes at 1 ping/sec)
         self.tick_queue = deque(maxlen=120)
 
+        self.ticks_processed = 0
+
         # Action queue for the EA to pick up on its next 1-second ping
         self.pending_ea_actions =[]
     
     def update_from_tick(self, tick: TickData):
         """Called every second by the EA ping."""
         now = time.time()
+
+        self.ticks_processed += 1 
+
         self.state.last_ea_ping_ts = now
         self.state.ea_connected = True
         
@@ -168,11 +173,11 @@ class DcaEngine:
                 expected_comment = f"{grid_state.session_id}_idx{row.index}"
                 matching_pos = next((p for p in session_positions if p.comment == expected_comment), None)
                 row.pnl = matching_pos.profit if matching_pos else 0.0
+                # 
+                running_pnl += row.pnl
+                row.cumulative_pnl = running_pnl
             else:
                 row.pnl = 0.0
-                
-            running_pnl += row.pnl
-            row.cumulative_pnl = running_pnl
 
     # --- TP / SL & CYCLIC LOGIC ---
     def _evaluate_tp_sl(self, side: str, tick: TickData):
@@ -305,19 +310,21 @@ class DcaEngine:
         
         if hard_reset:
             settings_ref.is_on = False
-            state_ref.session_id = None
-            state_ref.reference_point = None
-            
+        
+        # clear the running states
+        state_ref.session_id = None
+        state_ref.reference_point = None
         state_ref.is_hedged = False
-        state_ref.total_cumulative_pnl = 0.0
+        state_ref.emergency_state = False
         state_ref.total_cumulative_lots = 0.0
+        state_ref.total_cumulative_pnl = 0.0
         
         for row in settings_ref.rows:
+            row.alert_executed = False
             row.executed = False
+            row.price = None
             row.pnl = 0.0
             row.cumulative_pnl = 0.0
-            row.price = None
-            row.alert_executed = False
 
     # --- CROSSOVER & CYCLE START ---
     def _is_crossed(self, target_price: float, direction: str) -> bool:

@@ -9,7 +9,7 @@
 #property strict
 
 //--- Log Level Enum ---
-enum ENUM_LOG_LEVEL 
+enum ENUM_LOG_LEVEL
 {
    LOG_LEVEL_ERROR = 0,   // Error
    LOG_LEVEL_WARNING = 1, // Warning
@@ -19,11 +19,11 @@ enum ENUM_LOG_LEVEL
 
 //--- Input Parameters ---
 // input string InpServerURL   = "http://127.0.0.1:8000"; for dev
-input string         InpServerURL   = "http://YOUR_SERVER_IP:8000"; // Server Base URL
-input int            InpTimeout     = 5000;                         // Request timeout (ms)
-input int            InpMagicNumber = 789456;                       // Magic number for trades
-input int            InpSlippage    = 10;                           // Slippage in points
-input ENUM_LOG_LEVEL InpLogLevel    = LOG_LEVEL_INFO;               // Logging Level
+input string InpServerURL = "http://YOUR_SERVER_IP:8000"; // Server Base URL
+input int InpTimeout = 5000;                              // Request timeout (ms)
+input int InpMagicNumber = 789456;                        // Magic number for trades
+input int InpSlippage = 10;                               // Slippage in points
+input ENUM_LOG_LEVEL InpLogLevel = LOG_LEVEL_INFO;        // Logging Level
 
 //--- Global Variables ---
 string g_BrokerName = "";
@@ -44,17 +44,26 @@ int g_HandleH4 = INVALID_HANDLE;
 void LogMessage(ENUM_LOG_LEVEL level, string message)
 {
    // Skip if the message level is higher than the user's selected input
-   if (level > InpLogLevel) return;
-   
+   if (level > InpLogLevel)
+      return;
+
    string prefix = "";
-   switch(level)
+   switch (level)
    {
-      case LOG_LEVEL_ERROR:   prefix = "[ERROR] "; break;
-      case LOG_LEVEL_WARNING: prefix = "[WARN]  "; break;
-      case LOG_LEVEL_INFO:    prefix = "[INFO]  "; break;
-      case LOG_LEVEL_DEBUG:   prefix = "[DEBUG] "; break;
+   case LOG_LEVEL_ERROR:
+      prefix = "[ERROR] ";
+      break;
+   case LOG_LEVEL_WARNING:
+      prefix = "[WARN]  ";
+      break;
+   case LOG_LEVEL_INFO:
+      prefix = "[INFO]  ";
+      break;
+   case LOG_LEVEL_DEBUG:
+      prefix = "[DEBUG] ";
+      break;
    }
-   
+
    Print(prefix + message);
 }
 
@@ -98,9 +107,11 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   
-   if(g_HandleH1 != INVALID_HANDLE) IndicatorRelease(g_HandleH1);
-   if(g_HandleH4 != INVALID_HANDLE) IndicatorRelease(g_HandleH4);
+
+   if (g_HandleH1 != INVALID_HANDLE)
+      IndicatorRelease(g_HandleH1);
+   if (g_HandleH4 != INVALID_HANDLE)
+      IndicatorRelease(g_HandleH4);
 
    LogMessage(LOG_LEVEL_INFO, "==================================================");
    LogMessage(LOG_LEVEL_INFO, "Elastic DCA Client Stopped. Reason: " + IntegerToString(reason));
@@ -137,16 +148,21 @@ void OnTimer()
 //+------------------------------------------------------------------+
 string GetTrend(int handle, ENUM_TIMEFRAMES tf)
 {
-   if(handle == INVALID_HANDLE) return "neutral";
-   
+   if (handle == INVALID_HANDLE)
+      return "neutral";
+
    double ma[1];
    double close[1];
-   
-   if(CopyBuffer(handle, 0, 0, 1, ma) <= 0) return "neutral";
-   if(CopyClose(g_Symbol, tf, 0, 1, close) <= 0) return "neutral";
-   
-   if(close[0] > ma[0]) return "up";
-   if(close[0] < ma[0]) return "down";
+
+   if (CopyBuffer(handle, 0, 0, 1, ma) <= 0)
+      return "neutral";
+   if (CopyClose(g_Symbol, tf, 0, 1, close) <= 0)
+      return "neutral";
+
+   if (close[0] > ma[0])
+      return "BUY";
+   if (close[0] < ma[0])
+      return "SELL";
    return "neutral";
 }
 
@@ -265,7 +281,7 @@ void SendTickToServer(string jsonPayload)
          LogMessage(LOG_LEVEL_ERROR, "Tools -> Options -> Expert Advisors -> Allow WebRequest for: " + InpServerURL);
          g_ServerReachable = false;
       }
-      else if(g_ConsecutiveErrors % 10 == 1) 
+      else if (g_ConsecutiveErrors % 10 == 1)
       {
          LogMessage(LOG_LEVEL_ERROR, "Server Connection Error! HTTP Status: " + IntegerToString(statusCode) + " | MQL Err: " + IntegerToString(error));
       }
@@ -277,26 +293,29 @@ void SendTickToServer(string jsonPayload)
 //+------------------------------------------------------------------+
 void ProcessBulkServerResponse(string response)
 {
-   if (response == "") 
+   if (response == "")
       return;
 
    // Locate the actions array
    int arrayStart = StringFind(response, "[");
    int arrayEnd = StringFind(response, "]", arrayStart);
-   
-   if (arrayStart == -1 || arrayEnd == -1) return;
+
+   if (arrayStart == -1 || arrayEnd == -1)
+      return;
 
    string arrayStr = StringSubstr(response, arrayStart + 1, arrayEnd - arrayStart - 1);
    int objStart = 0;
 
    // Loop through all JSON objects inside the array
-   while(true)
+   while (true)
    {
       objStart = StringFind(arrayStr, "{", objStart);
-      if (objStart == -1) break;
-      
+      if (objStart == -1)
+         break;
+
       int objEnd = StringFind(arrayStr, "}", objStart);
-      if (objEnd == -1) break;
+      if (objEnd == -1)
+         break;
 
       string objStr = StringSubstr(arrayStr, objStart, objEnd - objStart + 1);
       ProcessSingleActionObject(objStr);
@@ -321,7 +340,7 @@ void ProcessSingleActionObject(string obj)
    if (action == "CLOSE_ALL")
    {
       string comment = ExtractJsonValue(obj, "comment");
-      if (comment != "") 
+      if (comment != "")
       {
          LogMessage(LOG_LEVEL_INFO, "Server instructed CLOSE_ALL for Hash ID: " + comment);
          ClosePositionsByComment(comment);
@@ -337,9 +356,9 @@ void ProcessSingleActionObject(string obj)
 
       if (volume > 0 && comment != "")
       {
-         if (action == "BUY") 
+         if (action == "BUY")
             ExecuteOrder(ORDER_TYPE_BUY, volume, comment, 0.0, 0.0);
-         else 
+         else
             ExecuteOrder(ORDER_TYPE_SELL, volume, comment, 0.0, 0.0);
       }
       return;
@@ -399,11 +418,11 @@ void ExecuteOrder(ENUM_ORDER_TYPE type, double lots, string comment, double sl, 
    request.volume = lots;
    request.type = type;
    request.price = price;
-   
+
    // Apply Hard SL/TP if provided (for Hedging)
    request.sl = (sl > 0) ? NormalizeDouble(sl, g_Digits) : 0;
    request.tp = (tp > 0) ? NormalizeDouble(tp, g_Digits) : 0;
-   
+
    request.deviation = InpSlippage;
    request.magic = InpMagicNumber;
    request.comment = comment;
@@ -446,12 +465,13 @@ void ClosePositionsByComment(string commentFilter)
          if (StringFind(comment, commentFilter) != -1)
          {
             matched++;
-            if (ClosePosition(ticket)) closed++;
+            if (ClosePosition(ticket))
+               closed++;
          }
       }
    }
-   
-   if (matched > 0) 
+
+   if (matched > 0)
    {
       LogMessage(LOG_LEVEL_INFO, "[CLEANUP] Matched Hash '" + commentFilter + "': Found " + IntegerToString(matched) + " | Successfully Closed: " + IntegerToString(closed));
    }
@@ -462,7 +482,8 @@ void ClosePositionsByComment(string commentFilter)
 //+------------------------------------------------------------------+
 bool ClosePosition(ulong ticket)
 {
-   if (!PositionSelectByTicket(ticket)) return false;
+   if (!PositionSelectByTicket(ticket))
+      return false;
 
    string symbol = PositionGetString(POSITION_SYMBOL);
    double volume = PositionGetDouble(POSITION_VOLUME);
@@ -486,12 +507,12 @@ bool ClosePosition(ulong ticket)
    ResetLastError();
    bool sent = OrderSend(request, result);
 
-   if (sent && result.retcode == TRADE_RETCODE_DONE) 
+   if (sent && result.retcode == TRADE_RETCODE_DONE)
    {
       LogMessage(LOG_LEVEL_DEBUG, "Closed Ticket: " + IntegerToString(ticket) + " successfully.");
       return true;
    }
-   
+
    LogMessage(LOG_LEVEL_ERROR, "Failed to close ticket " + IntegerToString(ticket) + " - Retcode: " + IntegerToString(result.retcode) + " | MQL Err: " + IntegerToString(GetLastError()));
    return false;
 }
@@ -503,16 +524,19 @@ string ExtractJsonValue(string json, string key)
 {
    string search = "\"" + key + "\"";
    int pos = StringFind(json, search);
-   if (pos == -1) return "";
+   if (pos == -1)
+      return "";
 
    pos = StringFind(json, ":", pos);
-   if (pos == -1) return "";
+   if (pos == -1)
+      return "";
    pos++;
 
    while (pos < StringLen(json))
    {
       ushort c = StringGetCharacter(json, pos);
-      if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+      if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+         break;
       pos++;
    }
 
@@ -520,7 +544,7 @@ string ExtractJsonValue(string json, string key)
    if (StringGetCharacter(json, pos) == '"')
    {
       isString = true;
-      pos++; 
+      pos++;
    }
 
    int endPos = pos;
@@ -528,7 +552,8 @@ string ExtractJsonValue(string json, string key)
    {
       while (endPos < StringLen(json))
       {
-         if (StringGetCharacter(json, endPos) == '"') break;
+         if (StringGetCharacter(json, endPos) == '"')
+            break;
          endPos++;
       }
    }
@@ -537,7 +562,8 @@ string ExtractJsonValue(string json, string key)
       while (endPos < StringLen(json))
       {
          ushort c = StringGetCharacter(json, endPos);
-         if (c == ',' || c == '}' || c == ']' || c == ' ') break;
+         if (c == ',' || c == '}' || c == ']' || c == ' ')
+            break;
          endPos++;
       }
    }

@@ -1,67 +1,22 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <meta name="viewport"
-        content="width=device-width, initial-scale=1" />
+        content="width=device-width, initial-scale=1.0" />
   <title>Elastic DCA dashboard</title>
   <link rel="icon"
         href="/src/favicon/favicon.ico"
         type="image/x-icon" />
-  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            gray: {
-              750: '#2d3748',
-              850: '#1a202c',
-              950: '#0d1117',
-            }
-          }
-        }
-      }
-    }
-  </script>
-  <style>
-    /* Custom scrollbar for data grids */
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-    }
-
-    ::-webkit-scrollbar-track {
-      background: #1a202c;
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: #4a5568;
-      border-radius: 4px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: #718096;
-    }
-  </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.1",
-    "react/": "https://aistudiocdn.com/react@^19.2.1/",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/"
-  }
-}
-</script>
 </head>
 
 <body class="bg-gray-950 text-gray-100 font-sans antialiased overflow-hidden">
   <div id="root"></div>
   <script type="module"
-          src="src/index.tsx"></script>
+          src="/src/main.tsx"></script>
 </body>
 
 </html>

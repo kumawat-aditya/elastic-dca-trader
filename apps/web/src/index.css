@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gray-750: #2d3748;
+  --color-gray-850: #1a202c;
+  --color-gray-950: #0d1117;
+}
+
+/* Custom scrollbar for data grids */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a202c;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4a5568;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #718096;
+}

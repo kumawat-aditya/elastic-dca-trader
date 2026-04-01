@@ -198,3 +198,448 @@ Returns an array of preset objects for your dropdown menu.
 - [ ] **Row Highlighting:** Use `row.executed == true` to change row background colors so the user sees the market crossing grid levels.
 - [ ] **Data Binding:** Never do math on the frontend. Bind your UI directly to `row.cumulative_lots` and `row.cumulative_pnl`.
 - [ ] **Projected Prices:** `row.price` is `null` when the grid is OFF. Once it starts, `row.price` dynamically populates with the exact market prices the rows will trigger at. Show this in the table.
+
+
+# 🎯 Elastic DCA v4 — **Final UI Draft (Strict + Refined)**
+
+---
+
+# 🧱 1. FULL PAGE STRUCTURE
+
+```plaintext
+---------------------------------------------------------
+| Elastic DCA v4                                         |
+|                                                       |
+| EURUSD | Ask | Bid | Mid | Equity | Balance           |
+|                                                       |
+| 🟢 Server: Connected   🟢 EA: Connected                |
+|                                                       |
+| [ Create Preset ]                                     |
+---------------------------------------------------------
+
+---------------------------------------------------------
+| BUY SECTION              | SELL SECTION               |
+| (Independent)            | (Independent)              |
+---------------------------------------------------------
+```
+
+---
+
+# 🔝 2. TOP BAR
+
+### LEFT
+
+```plaintext
+Elastic DCA v4
+```
+
+---
+
+### CENTER (WebSocket Binding Only)
+
+```plaintext
+EURUSD
+
+Ask: {current_ask}
+Bid: {current_bid}
+Mid: {current_mid}
+
+Equity: {equity}
+Balance: {balance}
+```
+
+---
+
+### RIGHT
+
+```plaintext
+🟢 Server: Connected / 🔴 Disconnected
+🟢 EA: Connected / 🔴 Disconnected
+
+[ Create Preset ]
+```
+
+---
+
+# 🔌 CONNECTION LOGIC
+
+### Server:
+
+* Based on WebSocket
+
+### EA:
+
+```plaintext
+if (now - last_tick > 5s)
+    → 🔴 Disconnected
+else
+    → 🟢 Connected
+```
+
+---
+
+# 🟩 3. BODY SPLIT (IMPORTANT)
+
+```plaintext
+| BUY SIDE | SELL SIDE |
+```
+
+✔ Fully independent
+✔ No shared state
+✔ Same structure
+
+---
+
+# 🟢 4. BUY SECTION (LEFT SIDE)
+
+---
+
+## 🧩 STRUCTURE
+
+```plaintext
+-----------------------------------
+| BUY GRID                        |
+-----------------------------------
+
+| ACTIONS                         |
+| SETTINGS + PRESETS              |
+| GRID TABLE                      |
+-----------------------------------
+```
+
+---
+
+# 🚨 4.1 EMERGENCY OVERLAY (BUY ONLY)
+
+### Condition:
+
+```plaintext
+buy_state.emergency_state == true
+```
+
+---
+
+### UI Behavior:
+
+```plaintext
+-----------------------------------
+| 🔴 OVERLAY (COVERS BUY SECTION) |
+|                                 |
+| 🚨 Unknown BUY trades detected  |
+| Please close them manually      |
+|                                 |
+-----------------------------------
+```
+
+---
+
+### UX Rules:
+
+* Entire BUY section becomes:
+
+  * ❌ Disabled
+  * 🌑 Darkened
+* No interaction allowed underneath
+
+---
+
+# 🎛️ 4.2 ACTION CONTROLS
+
+```plaintext
+[ ON/OFF Toggle ]   → is_on
+[ CYCLIC Toggle ]   → is_cyclic
+
+[ Apply ]
+```
+
+---
+
+### API:
+
+```plaintext
+POST /api/v1/ui/control/buy
+```
+
+---
+
+# ⚙️ 4.3 SETTINGS + PRESET SELECTOR
+
+```plaintext
+Start Limit: [ input ]
+Stop Limit:  [ input ]
+
+TP Type:  [ select ]
+TP Value: [ input ]
+
+SL Type:  [ select ]
+SL Value: [ input ]
+
+Hedging: [ input ]
+
+-------------------------
+
+Preset:
+[ Dropdown ▼ ]
+```
+
+---
+
+### Notes:
+
+* Preset dropdown → `GET /presets`
+* Load preset → `POST /presets/{id}/load/buy`
+* Disable load if:
+
+```plaintext
+is_on == true
+```
+
+---
+
+# 📊 4.4 GRID TABLE (BUY)
+
+```plaintext
+|Idx|Gap|Lots|Price  |CumLots|CumPnL|Alert|
+------------------------------------------------
+|0  |10 |0.01|1.0500 |0.01   |5.50  |false|
+|1  |25 |0.02|1.0480 |0.03   |-3.20 |true |
+```
+
+---
+
+## 🔒 EDITING RULES
+
+### Executed row (UI internal only):
+
+* gap ❌ locked
+* lots ❌ locked
+* alert ✔ editable
+
+---
+
+### Important:
+
+❌ Do NOT show:
+
+```plaintext
+executed
+alert_executed
+```
+
+---
+
+# 🔔 4.5 ALERT SYSTEM (BUY)
+
+---
+
+## Trigger Condition:
+
+```plaintext
+row.alert == true
+row.executed == true
+row.alert_executed == false
+```
+
+---
+
+## UI (POPUP CARD)
+
+```plaintext
+-----------------------------
+🚨 BUY ALERT
+
+Row: 1 triggered
+
+[ Acknowledge ]
+-----------------------------
+```
+
+---
+
+## Behavior:
+
+* 🔊 Continuous sound (loop)
+* Blocks attention (top layer, not full screen)
+
+---
+
+## On Click:
+
+```plaintext
+POST /api/v1/ui/ack-alert/buy/{index}
+```
+
+* Stop sound
+* Close popup
+
+---
+
+# 🔴 5. SELL SECTION (RIGHT SIDE)
+
+⚠️ EXACT SAME STRUCTURE AS BUY
+⚠️ FULLY INDEPENDENT
+
+---
+
+## 🚨 EMERGENCY OVERLAY (SELL ONLY)
+
+```plaintext
+sell_state.emergency_state == true
+```
+
+```plaintext
+-----------------------------------
+| 🔴 OVERLAY (SELL SECTION ONLY)  |
+|                                 |
+| 🚨 Unknown SELL trades detected |
+| Please close them manually      |
+-----------------------------------
+```
+
+---
+
+## 🎛️ CONTROLS
+
+```plaintext
+POST /control/sell
+```
+
+---
+
+## ⚙️ SETTINGS
+
+```plaintext
+PUT /settings/sell
+```
+
+---
+
+## 📊 GRID TABLE
+
+Same columns:
+
+```plaintext
+Idx | Gap | Lots | Price | CumLots | CumPnL | Alert
+```
+
+---
+
+## 🔔 ALERT POPUP (SELL)
+
+```plaintext
+🚨 SELL ALERT
+
+Row: 0 triggered
+
+[ Acknowledge ]
+```
+
+---
+
+### API:
+
+```plaintext
+POST /ack-alert/sell/{index}
+```
+
+---
+
+# 💾 6. CREATE PRESET (NAVBAR FLOW)
+
+---
+
+## Button:
+
+```plaintext
+[ Create Preset ]
+```
+
+---
+
+## On Click → POPUP CARD
+
+```plaintext
+-------------------------------
+Create Preset
+
+Name: [__________]
+
+Rows:
+
+|Idx|Gap|Lots|Alert|
+--------------------
+|0  |    |    |     |
+|1  |    |    |     |
+
+[ + Add Row ]
+
+-------------------------------
+[ Save Preset ]
+-------------------------------
+```
+
+---
+
+## API:
+
+```plaintext
+POST /api/v1/ui/presets
+```
+
+---
+
+## Rules:
+
+* Only send:
+
+```plaintext
+rows[]
+```
+
+* No settings
+* No TP/SL
+* No limits
+
+---
+
+# 🎨 7. VISUAL BEHAVIOR SUMMARY
+
+---
+
+## BUY SIDE
+
+* Green highlights
+* Green executed rows
+
+## SELL SIDE
+
+* Red highlights
+* Red executed rows
+
+---
+
+## DISABLED STATE (Emergency)
+
+* Dark overlay
+* Blur / dim effect
+* No clicks allowed
+
+---
+
+## ALERT
+
+* Floating card
+* Continuous sound
+* Requires manual acknowledgement
+
+---
+
+# 🧠 FINAL SYSTEM ALIGNMENT
+
+| Layer   | Responsibility           |
+| ------- | ------------------------ |
+| Backend | All logic                |
+| EA      | Execution                |
+| UI      | Rendering + User Actions |
+
+---

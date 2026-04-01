@@ -103,6 +103,8 @@ For production, we will **build** the optimized files and serve them using a lig
     ```bash
     # Edit the API service file
     nano src/services/api.ts
+    # also edit the websocekt connection
+    nano src/App.tsx
     ```
 
     _Look for `const API_BASE_URL`. Change it to:_
@@ -130,7 +132,6 @@ For production, we will **build** the optimized files and serve them using a lig
     screen -S frontend
 
     # Serve the 'dist' folder on Port 3000
-    serve -s dist -l 3000
     ```
 
 6.  **Detach:** Press **`CTRL + A`**, then **`D`**.

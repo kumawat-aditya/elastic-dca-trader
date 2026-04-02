@@ -42,7 +42,7 @@ class GridSettings(BaseModel):
     
     # Risk Management
     start_limit: Optional[float] = None
-    stop_limit: Optional[int] = None
+    row_stop_limit: Optional[int] = None
     
     tp_type: str = "fixed" # "fixed", "equity", "balance"
     tp_value: float = 0.0

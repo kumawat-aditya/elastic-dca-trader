@@ -234,8 +234,12 @@ export default function SidePanel({
         toast.error("Stop Loss value must be filled and cannot be negative.");
         return;
       }
-      if (localSettings.stop_limit !== null && localSettings.stop_limit < 0) {
-        toast.error("Stop Limit cannot be negative.");
+      if (
+        localSettings.row_stop_limit !== null &&
+        localSettings.row_stop_limit !== undefined &&
+        localSettings.row_stop_limit < 0
+      ) {
+        toast.error("Row Stop Limit cannot be negative.");
         return;
       }
 
@@ -417,15 +421,15 @@ export default function SidePanel({
           </div>
           <div>
             <label className="block text-xs text-slate-400 uppercase mb-1">
-              Stop Limit
+              Row Stop Limit
             </label>
             <NumberInput
               min={0}
               isInteger={true}
               step="1"
               className="w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-300 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 outline-none transition-all font-mono"
-              value={localSettings.stop_limit}
-              onChange={(val) => updateLocalSetting("stop_limit", val)}
+              value={localSettings.row_stop_limit}
+              onChange={(val) => updateLocalSetting("row_stop_limit", val)}
             />
           </div>
           <div>

@@ -19,7 +19,7 @@ export interface GridSettings {
   is_on: boolean;
   is_cyclic: boolean;
   start_limit: number | null;
-  stop_limit: number | null;
+  row_stop_limit: number | null;
   tp_type: "fixed" | "equity" | "balance";
   tp_value: number;
   sl_type: "fixed" | "equity" | "balance";

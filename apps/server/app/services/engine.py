@@ -213,11 +213,17 @@ class DcaEngine:
                 "comment": grid_state.session_id
             })
             
-            is_cyclic = grid_settings.is_cyclic
-            if is_cyclic:
-                logger.info(f"[{side.upper()}] Cyclic Restart Enabled. Preparing for new cycle.")
-            
-            self._clear_grid_cycle(side, hard_reset=not is_cyclic)
+            if close_reason == "SL":
+                # SL hit: turn off the grid completely and disable cyclic — requires manual restart
+                logger.info(f"[{side.upper()}] SL Hit. Disabling grid switch and cyclic. Manual restart required.")
+                grid_settings.is_cyclic = False
+                self._clear_grid_cycle(side, hard_reset=True)
+            else:
+                # TP hit: respect cyclic setting
+                is_cyclic = grid_settings.is_cyclic
+                if is_cyclic:
+                    logger.info(f"[{side.upper()}] Cyclic Restart Enabled. Preparing for new cycle.")
+                self._clear_grid_cycle(side, hard_reset=not is_cyclic)
 
     # --- HEDGING MATH LOGIC ---
     def _evaluate_hedging(self, side: str):
@@ -317,7 +323,7 @@ class DcaEngine:
         if not grid_settings.is_on or not grid_state.session_id or grid_state.is_hedged: return
             
         for i, row in enumerate(grid_settings.rows):
-            if grid_settings.stop_limit is not None and i >= grid_settings.stop_limit: 
+            if grid_settings.row_stop_limit is not None and i >= grid_settings.row_stop_limit: 
                 break
             if row.executed or row.price is None: 
                 continue
@@ -326,6 +332,10 @@ class DcaEngine:
                 
             if is_triggered:
                 row.executed = True
+                # Clear start_limit so future cycles (cyclic or manual restart) begin immediately
+                if grid_settings.start_limit is not None:
+                    grid_settings.start_limit = None
+                    logger.info(f"[{side.upper()}] start_limit cleared after first row execution — future sessions will anchor immediately.")
                 logger.info(f"[{side.upper()}] Row {row.index} Crossover! Target: {row.price}. Queuing EA Action.")
                 self.pending_ea_actions.append({
                     "action": "BUY" if side == "buy" else "SELL",

@@ -1,179 +1,165 @@
 # 🧠 Elastic DCA Engine (Server)
 
-**Version:** `3.4.2`  
-**Architecture:** Python 3.9+ / FastAPI / Uvicorn  
+**Version:** `4.x`  
+**Architecture:** Python 3.9+ / FastAPI / Uvicorn / SQLite  
 **Role:** Central State Machine & Decision Engine
 
 ## 🎯 System Overview
 
-The **Elastic DCA Server** acts as the "Brain" of the trading operation. Unlike standard MT5 EAs that run logic inside the terminal, this system offloads all state management, risk calculations, and decision-making to this Python engine.
+The **Elastic DCA Server** is the brain of the trading system. All grid logic, risk math, and decision making run here. The MT5 Expert Advisor is a stateless HTTP client that reports market data every second and executes instructions it receives back. The React dashboard is a read-only monitor plus settings control.
 
-This ensures:
-1.  **State Persistence:** If MT5 crashes, the trading session state is safe in `state.json`.
-2.  **Complex Calculation:** Python handles the "Elastic" grid logic and "IronClad" hedge protections more efficiently.
-3.  **Isolation:** Buy and Sell vectors run on completely separate logic tracks.
+```
+MetaTrader 5 (EA)  ←──HTTP──→  FastAPI Server  ←──WebSocket──→  React UI
+   (MQL5 script)                 (DcaEngine)                    (Dashboard)
+                                       │
+                                    SQLite
+                                   (Presets)
+```
 
 ---
 
 ## ⭐ Core Protocols
 
-### 1. The Elastic Vector (Accumulation)
-Instead of static grids, the system uses dynamic **"Strata"** (Rows).
-- **Expansion:** As price moves against the anchor, the server instructs MT5 to place orders at specific `gap` intervals defined in the settings.
-- **Anchor:** The starting reference price (`buy_start_ref`).
-- **Logic:** `Current Price` vs `Next Strata Target`.
+### 1. Elastic Grid (Accumulation)
 
-### 2. Snap-Back Take Profit (The Exit)
-The system ignores individual trade profit. It calculates the **Net Aggregate Profit** of the specific side (Buy or Sell vector).
-- **Trigger:** When `Sum(Profits) >= Target`, the server sends a `CLOSE_ALL` command.
-- **Result:** The elastic band "snaps back," clearing the board for a new session.
+Price moves against the anchor price trigger grid rows one by one. Each row opens a trade at the configured lot size. The anchor (`reference_point`) is set when the cycle starts — at the current ask (buy) or bid (sell) at that moment.
 
-### 3. IronClad Protection (The Shield) 🛡️
-A dedicated monitor checks the floating drawdown of every heartbeat.
-- **Trigger:** If `Drawdown <= Hedge Limit` (e.g., -$50).
-- **Action:**
-    1.  **Lock:** The losing vector is flagged as `hedge_triggered`. No new accumulation orders are allowed.
-    2.  **Counter-Measure:** The server calculates the *exact* volume of the losing side and forces a trade on the **opposite** side.
-    3.  **Stasis:** The account equity is now "frozen" regarding this pair, allowing manual intervention.
+Row prices are computed as cumulative gaps from the anchor:
 
-### 4. Sync-Shield (Latency Guard) 📡
-*Added in v3.4.2*
-Prevents "Orphan Trades" caused by network lag.
-- **Mechanism:** When the server orders a trade, it records a timestamp (`last_order_sent_ts`).
-- **Grace Period:** For 5 seconds after ordering, the server **ignores** reports from MT5 saying "No trades exist."
-- **Benefit:** Prevents the server from thinking a session ended just because the broker hasn't confirmed the trade execution yet.
+- **Buy:** `price = anchor − Σ(gaps up to that row)`
+- **Sell:** `price = anchor + Σ(gaps up to that row)`
 
----
+### 2. Take Profit — Snap-Back Exit
 
-## 🔄 The Decision Loop (Lifecycle)
+The engine monitors the **net aggregate floating P&L** of all active session trades. When `total_cumulative_pnl >= tp_target`, it sends `CLOSE_ALL` to the EA.
 
-The server processes data in **1000ms intervals** (Heartbeats).
+- **Cyclic mode ON:** A new session starts immediately after the close.
+- **Cyclic mode OFF:** The grid is cleared but stays ON, waiting for the next trigger.
 
-1.  **Ingest:** Receive JSON payload from MT5 (Prices, Equity, Open Positions).
-2.  **Sanitize:** Validate all open trades against the known `Session Hash` (UUID). Detect "Alien" trades.
-3.  **Update Stats:** Update the internal execution map (`buy_exec_map`) with real-time profit/loss data.
-4.  **IronClad Check:** Is the drawdown too high? -> **Trigger Hedge**.
-5.  **Snap-Back Check:** Is the profit target hit? -> **Trigger Close**.
-6.  **External Close Check:** Did the user manually close trades in MT5? (Subject to Sync-Shield grace period).
-7.  **Elastic Expansion:** If the price reached the next `Strata` level -> **Trigger New Order**.
-8.  **Response:** Send JSON command back to MT5 (`BUY`, `SELL`, `CLOSE_ALL`, or `WAIT`).
+### 3. Stop Loss — Hard Stop
 
----
+When `total_cumulative_pnl <= -sl_target`:
 
-## 🔌 API Reference
+- `CLOSE_ALL` is issued to the EA.
+- `is_cyclic` is automatically forced to `false`.
+- `is_on` is set to `false` (hard stop).
+- **The grid requires manual re-activation via the UI.**
 
-### 📡 Endpoint: MQL5 Heartbeat
-**`POST /api/tick`**
-*The Metatrader 5 client hits this endpoint every second.*
+### 4. IronClad Hedge Protection 🛡️
 
-**Request (Incoming from MT5):**
-```json
-{
-  "account_id": "8829102",
-  "equity": 5000.0,
-  "balance": 4950.0,
-  "symbol": "XAUUSD",
-  "ask": 2030.50,
-  "bid": 2030.10,
-  "positions": [
-    { 
-      "ticket": 1001, 
-      "type": "BUY", 
-      "volume": 0.01, 
-      "price": 2035.00, 
-      "profit": -5.00, 
-      "comment": "buy_a1b2c3d4_idx0" 
-    }
-  ]
-}
-```
+If `total_cumulative_pnl <= -hedging_threshold` (before SL is hit), a counter-trade is deployed on the opposite side with volume equal to `total_cumulative_lots`. TP/SL for the hedge trade are computed from the distance between the reference point and current price. The grid is locked from further accumulation (`is_hedged = true`).
 
-**Response (Outgoing to MT5):**
-```json
-{
-  "action": "BUY", 
-  "volume": 0.02,
-  "comment": "buy_a1b2c3d4_idx1",
-  "alert": true
-}
-```
-*Possible Actions: `WAIT`, `BUY`, `SELL`, `CLOSE_ALL`.*
+### 5. Start Limit & Auto-Clear
+
+`start_limit` is an optional price threshold that must be crossed before a new session begins. Once the **first row executes** in a session, `start_limit` is automatically cleared to `null` so that future sessions (cyclic or manual restart) begin immediately without re-crossing the original trigger price.
+
+### 6. Row Stop Limit (`row_stop_limit`)
+
+An optional integer cap on how many rows may execute in a session. Rows at index ≥ `row_stop_limit` are skipped. `null` = no cap.
+
+### 7. Zombie & Emergency State Detection 🛡️
+
+- **Emergency State:** If the server has no active session but open trades with the engine's session prefix exist on the MT5 account, `emergency_state` is set to `true`. The UI shows a banner instructing the user to close them manually.
+- **Zombie Cleanup:** If trades from an _old_ session of the same side are found while a _new_ session is active, `CLOSE_ALL` commands are queued for those old sessions automatically.
+
+### 8. EA Timeout Guard
+
+If no tick is received for `EA_TIMEOUT_SECONDS`, both grids are hard-reset, `is_cyclic` is disabled, and `ea_connected` is set to `false`.
 
 ---
 
-### 🖥️ Endpoint: Frontend Data
-**`GET /api/ui-data`**
-*Used by the React Dashboard to visualize the engine.*
+## 🔄 Per-Tick Processing Pipeline
 
-**Response Structure:**
-```json
-{
-  "settings": {
-    "buy_limit_price": 0.0,
-    "buy_tp_value": 1.5,
-    "buy_hedge_value": 50.0,
-    "rows_buy": [ {"index": 0, "dollar": 0, "lots": 0.01} ]
-  },
-  "runtime": {
-    "buy_on": true,
-    "buy_id": "buy_a1b2c3d4",
-    "buy_hedge_triggered": false,
-    "current_price": 2030.30
-  },
-  "market": { ... }
-}
-```
+Every EA heartbeat triggers this evaluation sequence (both buy and sell, independently):
+
+| Step | Method                     | Purpose                                                                                        |
+| ---- | -------------------------- | ---------------------------------------------------------------------------------------------- |
+| 1    | `update_from_tick()`       | Update market prices, account data, tick queue                                                 |
+| 2    | `_check_emergency_state()` | Detect orphaned/zombie trades                                                                  |
+| 3    | `_map_positions_and_pnl()` | Sync floating P&L from EA positions into grid rows                                             |
+| 4    | `_evaluate_tp_sl()`        | TP hit → cyclic restart or clear. SL hit → force `is_on=False`, `is_cyclic=False`, hard reset. |
+| 5    | `_evaluate_hedging()`      | Deploy counter-trade if loss ≥ hedge threshold                                                 |
+| 6    | `_evaluate_cycle_start()`  | Start new session if `is_on` and no active session (respects `start_limit` if set)             |
+| 7    | `_evaluate_grid_rows()`    | Trigger BUY/SELL orders on price crossover; clear `start_limit` on first row execution         |
 
 ---
 
-### ⚙️ Endpoint: Controls
-**`POST /api/control`**
-*Toggle switches and emergency overrides.*
+## 🔌 API Overview
 
-```json
-{ 
-  "buy_switch": true,      // Turn Buy Vector ON/OFF
-  "sell_switch": false,    // Turn Sell Vector ON/OFF
-  "cyclic": true,          // Auto-restart after TP?
-  "emergency_close": false // PANIC BUTTON
-}
-```
+### EA Heartbeat
 
----
+**`POST /api/v1/ea/tick`** — 1-second ping from MT5.
 
-### 🛠️ Endpoint: Configuration
-**`POST /api/update-settings`**
-*Updates the grid strata and risk parameters.*
+**Request:** `{ account_id, equity, balance, symbol, ask, bid, trend_h1, trend_h4, positions[] }`  
+**Response:** `{ "actions": [ {action, volume, comment, ...}, ... ] }`
 
-**Payload:** Expects a full `UserSettings` object matching the schema in `ui-data`.
+Possible action types: `BUY`, `SELL`, `CLOSE_ALL`, `HEDGE`, `WAIT` (empty array).
+
+### Dashboard WebSocket
+
+**`WS /api/v1/ui/ws`** — Pushes full `SystemState` JSON once per second.
+
+### Grid Controls
+
+**`POST /api/v1/ui/control/{side}`** — `{ is_on: bool, is_cyclic: bool }`
+
+### Grid Settings
+
+**`PUT /api/v1/ui/settings/{side}`** — Full `GridSettings` object. Immutability of executed rows is enforced while grid is ON.
+
+### Presets (SQLite CRUD)
+
+- `GET /api/v1/ui/presets`
+- `POST /api/v1/ui/presets`
+- `PUT /api/v1/ui/presets/{id}`
+- `DELETE /api/v1/ui/presets/{id}`
+- `POST /api/v1/ui/presets/{id}/load/{side}`
+
+> Presets store **rows only** (gap, lots, alert). TP/SL, limits, and hedging are not stored in presets.
+
+See `docs/API_REFERENCE.md` for full schema and endpoint documentation.
 
 ---
 
 ## 🚀 Running the Server
 
 ### Requirements
-*   Python 3.9+
-*   `pip install fastapi uvicorn pydantic`
 
-### Start Command
+- Python 3.9+
+- Install dependencies: `pip install -r requirements.txt`
+
+### Start
+
 ```bash
-# Navigate to folder
-cd server
-
-# Run Uvicorn (Host 0.0.0.0 allows access from other devices/VMs)
+cd apps/server
+source venv/bin/activate   # or your virtualenv
 python main.py
 ```
-*Server runs on port **8000** by default.*
+
+Server starts on **port 8000** by default. EA connects to `http://<host>:8000/api/v1/ea/tick`. UI connects to `ws://<host>:8000/api/v1/ui/ws`.
+
+### Environment Variables (`.env`)
+
+| Variable             | Default | Description                                  |
+| -------------------- | ------- | -------------------------------------------- |
+| `EA_TIMEOUT_SECONDS` | `10`    | Seconds without a tick before disconnecting  |
+| `HEDGE_TP_PCT`       | `100`   | Hedge TP as % of reference-to-price distance |
+| `HEDGE_SL_PCT`       | `50`    | Hedge SL as % of TP distance                 |
+| `LOG_LEVEL`          | `DEBUG` | Logging verbosity                            |
+
+---
 
 ## ⚠️ Troubleshooting
 
-**"CRITICAL: Identity Conflict"**
-*   **Cause:** The server sees a trade in MT5 with a comment (e.g., `buy_X...`) that does not match its current internal Session ID.
-*   **Fix:**
-    1.  Turn off the bot logic via UI.
-    2.  Manually close the specific trade in MT5.
-    3.  Hit **Emergency Close** in the UI to reset the server state.
+**Emergency State Banner in UI**
 
-**"Orphan Trades"**
-*   **Cause:** Network lag caused MT5 to report 0 positions right after opening one.
-*   **Fix:** The **Sync-Shield** (v3.4.2) automatically handles this. If persistent, check your VPS network connection.
+- Open trades exist on MT5 that don't match any active server session.
+- Close them manually in MT5. The banner clears automatically on the next tick.
+
+**SL hit — grid won't restart**
+
+- By design: SL hit forces `is_on=False` and `is_cyclic=False`. Manually turn the grid back ON in the UI after reviewing conditions.
+
+**Orphan/Zombie trades after server restart**
+
+- After a server restart, any trades still open on MT5 will trigger emergency state since the server has no session memory. Close them manually in MT5.

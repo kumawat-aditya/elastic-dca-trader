@@ -186,6 +186,12 @@ sequenceDiagram
     Note over EA: Next tick receives CLOSE_ALL → closes all positions with matching comment
     Note over E: Next tick: _evaluate_cycle_start() fires again<br/>→ new session_id generated → new cycle begins
 
+    alt SL hit (cumulative_pnl <= -sl_value)
+        E->>E: is_cyclic forced to False
+        E->>E: _clear_grid_cycle("buy", hard_reset=True) → is_on = False
+        Note over E: Grid is fully OFF. Manual restart required via UI.
+    end
+
     alt Hedge triggered (cumulative_pnl <= -hedging threshold)
         E->>E: is_hedged = True
         E->>E: Calculate hedge: opposite direction,<br/>volume = total_cumulative_lots,<br/>TP/SL derived from reference_point distance
@@ -221,15 +227,15 @@ The single most important component. Instantiated once as a module-level singlet
 
 **Processing pipeline (called every second per tick):**
 
-| Step | Method                     | Purpose                                           |
-| ---- | -------------------------- | ------------------------------------------------- |
-| 1    | `update_from_tick()`       | Updates market data, increments counter           |
-| 2    | `_check_emergency_state()` | Detects orphaned/zombie trades                    |
-| 3    | `_map_positions_and_pnl()` | Syncs P&L from EA positions                       |
-| 4    | `_evaluate_tp_sl()`        | Triggers CLOSE_ALL if TP or SL thresholds met     |
-| 5    | `_evaluate_hedging()`      | Deploys counter-trade if loss exceeds hedge limit |
-| 6    | `_evaluate_cycle_start()`  | Initiates new session if conditions met           |
-| 7    | `_evaluate_grid_rows()`    | Triggers BUY/SELL orders on price crossover       |
+| Step | Method                     | Purpose                                                                                                                        |
+| ---- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | `update_from_tick()`       | Updates market data, increments counter                                                                                        |
+| 2    | `_check_emergency_state()` | Detects orphaned/zombie trades                                                                                                 |
+| 3    | `_map_positions_and_pnl()` | Syncs P&L from EA positions                                                                                                    |
+| 4    | `_evaluate_tp_sl()`        | Triggers CLOSE_ALL if TP or SL thresholds met. On SL: forces `is_on=False` and `is_cyclic=False`. On TP: respects `is_cyclic`. |
+| 5    | `_evaluate_hedging()`      | Deploys counter-trade if loss exceeds hedge limit                                                                              |
+| 6    | `_evaluate_cycle_start()`  | Initiates new session if conditions met. If `start_limit` is set, waits for a price crossover; otherwise starts immediately.   |
+| 7    | `_evaluate_grid_rows()`    | Triggers BUY/SELL orders on price crossover                                                                                    |
 
 ### `ea_api.py` — EA Communication Router
 
@@ -305,7 +311,7 @@ classDiagram
         +bool is_on
         +bool is_cyclic
         +float|null start_limit
-        +int|null stop_limit
+        +int|null row_stop_limit
         +str tp_type : "fixed|equity|balance"
         +float tp_value
         +str sl_type : "fixed|equity|balance"

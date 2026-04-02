@@ -69,18 +69,18 @@ These types appear across multiple endpoints. They map 1:1 to both the backend P
 
 ### `GridSettings`
 
-| Field         | Type                               | Description                                                                                          |
-| ------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `is_on`       | `boolean`                          | Master switch: `true` = grid is active                                                               |
-| `is_cyclic`   | `boolean`                          | If `true`, automatically starts a new session after TP/SL is hit                                     |
-| `start_limit` | `float \| null`                    | Price level that must be crossed before the session anchors. `null` = start immediately on next tick |
-| `stop_limit`  | `integer \| null`                  | Maximum number of rows to execute. `null` = no limit                                                 |
-| `tp_type`     | `"fixed" \| "equity" \| "balance"` | How the TP target is interpreted                                                                     |
-| `tp_value`    | `float`                            | TP target value. `<= 0` disables TP. For `equity`/`balance` types, this is a percentage              |
-| `sl_type`     | `"fixed" \| "equity" \| "balance"` | How the SL target is interpreted                                                                     |
-| `sl_value`    | `float`                            | SL target value (absolute; the engine compares against `-sl_value`). `<= 0` disables SL              |
-| `hedging`     | `float \| null`                    | Dollar loss threshold that triggers the automatic hedge. `null` = disabled                           |
-| `rows`        | `GridRow[]`                        | The ordered list of grid rows                                                                        |
+| Field            | Type                               | Description                                                                                                                                                                                                               |
+| ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `is_on`          | `boolean`                          | Master switch: `true` = grid is active                                                                                                                                                                                    |
+| `is_cyclic`      | `boolean`                          | If `true`, automatically starts a new session after a **TP** hit. Automatically forced to `false` on an **SL** hit — requires manual re-enable.                                                                           |
+| `start_limit`    | `float \| null`                    | Price level that must be crossed before the session anchors. `null` = start immediately. Automatically cleared to `null` once the first row executes (so cyclic/manual restarts begin without re-crossing the old limit). |
+| `row_stop_limit` | `integer \| null`                  | Maximum number of rows to execute. `null` = no limit. Rows beyond this index are skipped.                                                                                                                                 |
+| `tp_type`        | `"fixed" \| "equity" \| "balance"` | How the TP target is interpreted                                                                                                                                                                                          |
+| `tp_value`       | `float`                            | TP target value. `<= 0` disables TP. For `equity`/`balance` types, this is a percentage                                                                                                                                   |
+| `sl_type`        | `"fixed" \| "equity" \| "balance"` | How the SL target is interpreted                                                                                                                                                                                          |
+| `sl_value`       | `float`                            | SL target value (absolute; the engine compares against `-sl_value`). `<= 0` disables SL                                                                                                                                   |
+| `hedging`        | `float \| null`                    | Dollar loss threshold that triggers the automatic hedge. `null` = disabled                                                                                                                                                |
+| `rows`           | `GridRow[]`                        | The ordered list of grid rows                                                                                                                                                                                             |
 
 ### `GridState`
 
@@ -265,10 +265,10 @@ The frontend reconnects automatically after a 3-second delay on disconnect.
 }
 ```
 
-| Field       | Type      | Required | Description                                             |
-| ----------- | --------- | -------- | ------------------------------------------------------- |
-| `is_on`     | `boolean` | Yes      | Target power state for the grid                         |
-| `is_cyclic` | `boolean` | Yes      | Whether to enable automatic session restart after TP/SL |
+| Field       | Type      | Required | Description                                                                                 |
+| ----------- | --------- | -------- | ------------------------------------------------------------------------------------------- |
+| `is_on`     | `boolean` | Yes      | Target power state for the grid                                                             |
+| `is_cyclic` | `boolean` | Yes      | Whether to enable automatic session restart after TP hit. Automatically disabled on SL hit. |
 
 **Response:** `200 OK`
 
@@ -307,7 +307,7 @@ After saving, `engine.recalculate_grid_math(side)` is called to instantly recomp
   "is_on": false,
   "is_cyclic": false,
   "start_limit": null,
-  "stop_limit": null,
+  "row_stop_limit": null,
   "tp_type": "fixed",
   "tp_value": 100.0,
   "sl_type": "fixed",

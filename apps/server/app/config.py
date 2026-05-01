@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     
     # EA & System Params
-    EA_TIMEOUT_SECONDS: int = 10
+    EA_TIMEOUT_SECONDS: int = 300
     CROSSOVER_TICK_COUNT: int = 5
     
     # Hedge Math
